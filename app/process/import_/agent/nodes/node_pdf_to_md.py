@@ -21,7 +21,7 @@ def node_pdf_to_md(state: ImportGraphState) -> ImportGraphState:
 if __name__ == "__main__":
     logger.info("===== 开始 node_pdf_to_md 节点联调测试 =====")
 
-    test_pdf_path = os.path.join(PROJECT_ROOT, "doc/1.法规政策相关/1.国家/关于加强城市节水工作的指导意见.pdf")
+    test_pdf_path = os.path.join(PROJECT_ROOT, "doc/4.质量论文/再生水厂平面布局分析与节地策略探讨.pdf")
     test_state = create_default_state(
         task_id="test_pdf2md_task_001",
         pdf_path=test_pdf_path,

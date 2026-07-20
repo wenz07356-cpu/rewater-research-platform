@@ -10,7 +10,9 @@ from app.shared.runtime.logger import logger
 _DEFAULT_LLM_MODEL = "qwen3-32b"
 _DEFAULT_TEMPERATURE = 0.1
 _llm_client_cache: dict[tuple[str, bool], ChatOpenAI] = {}
-
+#qwen-plus false ->chatopenAI -> (qwen-plus,false) = ChatOpenAI [千问 不需要强调json]
+#qwen-plus true ->chatopenAI -> (qwen-plus,true) = ChatOpenAI [千问 需要强调json]
+#qwen-plus true ->chatopenAI -> (qwen-plus,true) -> _llm_client_cache -> chatopenAI
 
 def get_llm_client(model: str | None = None, json_mode: bool = False) -> ChatOpenAI:
     """

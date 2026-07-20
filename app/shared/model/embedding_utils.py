@@ -1,14 +1,15 @@
 """
 工具模块，负责提供 embedding 相关的辅助能力。
 """
-from pymilvus.model.hybrid import BGEM3EmbeddingFunction
+
+from milvus_model.hybrid import BGEM3EmbeddingFunction
 
 from app.shared.config.embedding_config import embedding_config
 from app.shared.runtime.logger import logger
 
 _DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 _DEFAULT_EMBEDDING_DEVICE = "cpu"
-_bge_m3_ef: BGEM3EmbeddingFunction | None = None
+_bge_m3_ef: "BGEM3EmbeddingFunction | None" = None
 
 
 def get_bge_m3_ef() -> BGEM3EmbeddingFunction:

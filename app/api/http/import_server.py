@@ -22,7 +22,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.api.schemas.import_ import ImportStatusResponse, UploadResponse
 from app.shared.runtime.logger import PROJECT_ROOT, logger
-from app.process.import_.agent.main_graph import kb_import_app
+from app.process.import_.agent.main_graph import import_app
 from app.process.import_.agent.state import get_default_state
 from app.infra.config import settings
 from app.shared.utils.task_utils import (
@@ -85,7 +85,7 @@ def run_graph_task(task_id: str, local_dir: str, local_file_path: str):
         init_state["local_file_path"] = local_file_path  # 上传文件本地路径
 
         # 3. 流式执行LangGraph全流程（stream模式：实时获取每个节点的执行结果）
-        for event in kb_import_app.stream(init_state):
+        for event in import_app.stream(init_state):
             for node_name, node_result in event.items():
                 # 记录每个节点完成的日志，包含任务ID和节点名，方便追踪执行顺序
                 logger.info(f"[{task_id}] LangGraph节点执行完成：{node_name}")

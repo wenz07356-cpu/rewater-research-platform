@@ -1,32 +1,32 @@
 import copy
 import json
 import uuid
-from typing import TypedDict
+from typing import TypedDict, Optional
 from app.shared.runtime.logger import logger
 class ImportGraphState(TypedDict):
     #任务追踪
-    task_id:str
+    task_id:Optional[str]
     #传入文件地址
-    local_file_path:str
+    local_file_path:Optional[str]
     #判断结果
     is_md_read_enabled:bool
     is_pdf_read_enabled:bool
     #兜底item_name
-    file_title:str
+    file_title:Optional[str]
     #pdf解析入口文件地址
-    pdf_path:str
-    # pdf转出md文件地址
-    local_dir:str
+    pdf_path:Optional[str]
+    # pdf解析输出目录
+    local_dir:Optional[str]
     #md文件/图片地址
-    md_path: str
+    md_path: Optional[str]
     #切片原材料
-    md_content:str
+    md_content:Optional[str]
     #载体
-    chunks:list
+    chunks:Optional[list[str]]  # 根据实际元素类型调整
     #文档主语
-    item_name:str
+    item_name:Optional[str]
     #向量数据库
-    embedding_content:list
+    embedding_content:Optional[list[list[float]]] #根据实际元素类型调整
 
 graph_default_state: ImportGraphState = {
     'task_id': None,
@@ -40,18 +40,29 @@ graph_default_state: ImportGraphState = {
     'md_content': None,
     'chunks': None,
     'item_name': None,
-    'embedding_content': [],
+    'embedding_content':None,
 }
 
 def create_default_state(**overrides) -> ImportGraphState:
+    """
+    创建默认状态，支持覆盖。
+    :param overrides:
+    :return:
+    """
     new_state = copy.deepcopy(graph_default_state)
-    new_state.update(overrides)
+    new_state.update(overrides)  #原地修改 无返回值
     return new_state
 
+
 def get_default_state() -> ImportGraphState:
+    """
+    返回一个新的状态实例，避免全局污染
+    :return:
+    """
     return copy.deepcopy(graph_default_state)
 
+
 if __name__ == '__main__':
-    state = create_default_state(task_id="uuid.uuid4()",local_file_path = "**")
+    state = create_default_state(task_id=str(uuid.uuid4()),local_file_path = "**")
     logger.info(json.dumps(state, indent=2,ensure_ascii=False))
 

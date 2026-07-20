@@ -1,6 +1,3 @@
-from app.process.import_.agent.state import ImportGraphState
-
-
 import shutil
 import time
 import requests
@@ -77,7 +74,15 @@ def validate_pdf_paths(state: dict) -> tuple[Path, Path]:
 @step_log("upload_pdf_and_poll")
 def upload_pdf_and_poll(pdf_path_obj: Path) -> str:
     """
-    上传PDF文件到MinerU服务，并轮询等待解析完成，最终返回解析结果的下载地址
+    核心功能：上传PDF文件到MinerU服务，并轮询等待解析完成，最终返回解析结果的下载地址
+    业务逻辑：
+    (1)配置检查；
+    (2)构造请求报文
+    (3)网络状态确认
+    (4)收到响应报文
+    (5)业务状态确认
+    (6)获取上传地址，上传，用Session+put 标准操作
+    (7)轮询获取下载地址(构造请求报文，网络状态)
     :param pdf_path_obj: 本地PDF文件路径对象
     :return: 解析完成后的ZIP压缩包下载地址
     """
@@ -95,13 +100,14 @@ def upload_pdf_and_poll(pdf_path_obj: Path) -> str:
     }
 
     # 3. 构造请求参数：文件名 + 使用的模型版本
-    payload = {
-        "files": [{"name": pdf_path_obj.stem}],
+    data = {
+        "files": [{"name": pdf_path_obj.stem,
+                   "is_ocr": True}],
         "model_version": MINERU_MODEL_VERSION
     }
 
     # 4. 请求MinerU获取文件预上传地址
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=data)
     if response.status_code != 200:
         logger.error(f"申请上传地址失败,返回状态码为:{response.status_code},网络状态错误，无法继续业务!")
         raise RuntimeError(f"申请上传地址失败,返回状态码为:{response.status_code},网络状态错误，无法继续业务!")
@@ -140,7 +146,12 @@ def upload_pdf_and_poll(pdf_path_obj: Path) -> str:
         session.trust_env = False
         upload_response = session.put(file_upload_url, data=pdf_path_obj.read_bytes())
         if upload_response.status_code != 200:
-            raise RuntimeError(f"上传文件失败,返回状态码为:{upload_response.status_code},请检查minerU配置!")
+            logger.error(
+                f"上传文件失败,返回状态码为:{upload_response.status_code},请检查minerU配置!"
+            )
+            raise RuntimeError(
+                f"上传文件失败,返回状态码为:{upload_response.status_code},请检查minerU配置!"
+            )
 
     # 8. 构造轮询查询地址
         #获取minerU解析结果
@@ -215,13 +226,13 @@ def upload_pdf_and_poll(pdf_path_obj: Path) -> str:
         time.sleep(interval_time)
 
 @step_log("download_and_extract_markdown")
-def download_and_extract_markdown(zip_url: str, local_dir_path_obj: Path,     stem: str) -> Path:
+def download_and_extract_markdown(zip_url: str, local_dir_path_obj: Path, stem: str) -> Path:
     """
-    下载 MinerU 解析完成的 ZIP 压缩包，解压并提取出标准的 MD 文件
-    1. 从 zip_url 下载解析结果压缩包
-    2. 解压到指定目录
-    3. 自动查找最合适的 MD 文件（优先同名 → full.md → 第一个）
-    4. 重命名为统一规范的文件名并返回
+    (1)请求报文
+    (2)网络确认
+    (3)响应报文
+    (4)解压文件
+    (5)md文件确认
 
     Args:
         zip_url: MinerU 返回的 ZIP 下载地址

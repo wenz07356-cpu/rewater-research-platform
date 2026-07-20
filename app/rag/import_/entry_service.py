@@ -1,57 +1,63 @@
-import json
 from pathlib import Path
 
 from app.shared.runtime.logger import logger, step_log
-from app.shared.utils.task_utils import add_done_task, add_running_task
 from app.process.import_.agent.state import ImportGraphState
 
 
+# 常量抽离，便于后续维护
+SUPPORT_MD_SUFFIX = ".md"
+SUPPORT_PDF_SUFFIX = ".pdf"
+NODE_NAME = "node_entry"
 
 
 @step_log("resolve_input_file")
-def resolve_input_file(state: dict) -> ImportGraphState:
+def resolve_input_file(state: ImportGraphState) -> ImportGraphState:
     """
     文件类型识别与状态初始化节点（导入流程入口）
     核心功能：根据本地文件路径识别文件类型，自动装配对应状态字段，为后续流程路由提供依据
 
     业务逻辑：
-        1. 校验文件路径是否存在
-        2. 根据后缀识别 MD / PDF 文件
+        1. 校验文件路径非空且文件真实存在
+        2. 根据后缀识别 MD / PDF 文件（不区分大小写）
         3. 自动填充对应路径、路由开关、文件标题
-        4. 不支持的文件类型直接终止流程
+        4. 不支持的文件类型记录告警并返回
     Args:
         state: 导入流程全局状态，必须包含 local_file_path 字段
     Returns:
-        ImportGraphState: 补全文件信息后的完整状态对象
+        ImportGraphState: 状态增量字典，仅返回发生变化的字段
     """
-    # 1. 获取文件本地路径
+
+    # 1. 获取并校验文件路径
     local_file_path = state.get("local_file_path")
-
-    # 2. 校验文件路径是否为空，为空则直接结束流程
     if not local_file_path:
-        logger.error(f"节点:resolve_input_file, 文件路径为空，直接终止当前导入流程")
-        raise FileNotFoundError(f"节点:resolve_input_file, 文件路径为空，直接终止当前导入流程")
+        logger.error(f"节点:{NODE_NAME}, 文件路径为空，终止导入流程")
+        raise ValueError("文件路径不能为空")
 
-    # 3. 识别文件类型并设置对应状态与路由开关
-    if local_file_path.endswith(".md"):
-        # Markdown 文件：启用 MD 处理链路，禁用 PDF 处理链路
+    file_path = Path(local_file_path)
+    if not file_path.exists() or not file_path.is_file():
+        logger.error(f"节点:{NODE_NAME}, 文件不存在或不是有效文件: {local_file_path}")
+        raise FileNotFoundError(f"文件不存在: {local_file_path}")
+
+    # 2. 识别文件类型（不区分大小写）
+    suffix = file_path.suffix.lower()
+
+    if suffix == SUPPORT_MD_SUFFIX:
         state["md_path"] = local_file_path
         state["is_md_read_enabled"] = True
         state["is_pdf_read_enabled"] = False
 
-    elif local_file_path.endswith(".pdf"):
-        # PDF 文件：启用 PDF 处理链路，禁用 MD 处理链路
+    elif suffix == SUPPORT_PDF_SUFFIX:
         state["pdf_path"] = local_file_path
         state["is_pdf_read_enabled"] = True
         state["is_md_read_enabled"] = False
 
     else:
-        # 不支持的文件类型，直接终止流程
-        logger.warning(f"节点:resolve_input_file, 不支持的文件类型: {local_file_path}，终止流程")
+        logger.warning(f"节点:{NODE_NAME}, 不支持的文件类型: {local_file_path}，终止流程")
         return state
 
-    # 4. 自动提取文件标题（不带后缀） s
-    state["file_title"] = Path(local_file_path).stem
+    # 3. 提取文件标题
+    state["file_title"] = file_path.stem
 
-    # 5. 返回补全后的状态
+
+    # 返回增量，由LangGraph自动合并到全局状态
     return state

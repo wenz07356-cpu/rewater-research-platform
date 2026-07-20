@@ -1,7 +1,6 @@
 import base64
 import mimetypes
 import traceback
-import os
 import re
 from pathlib import Path
 from typing import Dict
@@ -31,7 +30,7 @@ def enrich_markdown_images(state: dict) -> dict:
     #1.参数校验和获取
     md_content, md_path_obj, images_path_obj = load_markdown_and_image_dir(state)
     #2.没有文件，提前终止
-    if not (images_path_obj.is_dir()) or images_path_obj.is_file() or len(list(images_path_obj.iterdir())) == 0:
+    if not (images_path_obj.is_dir() and next(images_path_obj.iterdir(), None) is not None):
         logger.info(f"{md_path_obj}文档对应的images为空，不需要图片识别，提前结束当前节点")
         return state
     #3.获取每个图片名称和地址
@@ -54,9 +53,9 @@ def load_markdown_and_image_dir(state: dict) -> tuple[str, Path, Path]:
         logger.error("md_path核心参数为空,无法继续!!")
         raise ValueError("md_path核心参数为空,无法继续!!")
     md_path_obj = Path(md_path)
-    if not md_path_obj:
+    if not md_path_obj.is_file():
         logger.error(f"md_path地址为：{md_path}，但是没有真实文件，业务无法继续，提前终止!")
-        raise ValueError("md_path核心参数为空,无法继续!!")
+        raise FileNotFoundError("md_path核心参数为空,无法继续!!")
     md_content = md_path_obj.read_text(encoding="utf-8")
     if not md_content:
         logger.error(f"md_path地址为：{md_path}，有真实文件，但是内容为空，提前终止!")
@@ -65,17 +64,6 @@ def load_markdown_and_image_dir(state: dict) -> tuple[str, Path, Path]:
 
     images_path_obj = md_path_obj.parent / "images"
     return md_content, md_path_obj, images_path_obj
-
-
-
-
-def is_supported_image(image_name):
-    """
-    判断文件是否为支持的图片格式
-    :param image_name: 文件名（含后缀）
-    :return: 是支持的图片返回 True，否则 False
-    """
-    return image_name.lower() in SUPPORTED_IMAGE_EXTENSIONS
 
 
 @step_log("scan_images")
@@ -94,7 +82,7 @@ def scan_images(md_content: str, images_path_obj: Path) -> list[tuple[str, str, 
     for image_file in images_path_obj.iterdir():
         image_name = image_file.name
         # 1. 过滤：不是支持的图片格式直接跳过
-        if is_supported_image(image_name):
+        if image_file.suffix not in SUPPORTED_IMAGE_EXTENSIONS:
             logger.warning(f"{image_name}不是图片,无需处理,跳过本次!!")
             continue
         # 2. 正则匹配：在 MD 内容中查找是否引用了当前图片
@@ -106,7 +94,8 @@ def scan_images(md_content: str, images_path_obj: Path) -> list[tuple[str, str, 
             logger.warning(f"{image_name}没有在md中使用,跳过本次处理!")
             continue
         # 3. 获取图片在 MD 中的位置（起始、结束下标）
-        start, end = match_obj.span()
+        start = match_obj.start()
+        end = match_obj.end()
         # 4. 截取图片【上方100字符】作为上文（防止越界）
         pre_context = md_content[max(start - 100, 0):start]
         # 5. 截取图片【下方100字符】作为下文（防止越界）
@@ -123,6 +112,12 @@ def scan_images(md_content: str, images_path_obj: Path) -> list[tuple[str, str, 
 
 @step_log("summarize_images")
 def summarize_images(image_context_list: list[tuple[str, str, tuple[str, str]]], stem: str) -> Dict[str, str]:
+    """
+
+    :param image_context_list:
+    :param stem:
+    :return:
+    """
     image_summaries_dict: Dict[str, str] = {}
     #1.获取模型对象
     vm_model = llm_provider.vision_chat()
@@ -164,6 +159,15 @@ def upload_images_and_replace(
     stem: str,
 ) -> str:
     """
+
+    :param image_context_list:
+    :param image_summaries_dict:
+    :param md_content:
+    :param stem:
+    :return:
+    """
+
+    """
     图片上传 + Markdown内容替换
     1. 清空MinIO中该文档的旧图片（避免脏数据）
     2. 上传新图片到MinIO
@@ -179,7 +183,7 @@ def upload_images_and_replace(
         bucket_name=minio_gateway.bucket_name,
         #prefix查询的时候，前面必须不能添加 / -> minio_img_dir  自带 /开头
         prefix=f"{minio_gateway.image_dir[1:]}/{stem}/",
-        recursive=True,
+        recursive=True,   #获取前缀下的文件夹中的所有对象
     )
     # 构造批量删除对象列表
     delete_object_list = [DeleteObject(obj.object_name) for obj in object_list]
@@ -230,11 +234,14 @@ def upload_images_and_replace(
         # 正则匹配：![xxx](xxx/图片名)
         rep = re.compile(r"\!\[.*?\]\(.*?" + re.escape(image_name) + r".*?\)")
 
-        # ----------------------- 重点：为什么用 lambda？-----------------------
-        # re.sub 的第二个参数需要是【替换模板】或【处理函数】
-        # 我们需要动态拼接：![图片摘要](在线URL) → 必须用函数动态生成
-        # lambda _: ...  这里的 _ 表示匹配到的对象（我们不需要它，所以用下划线忽略）  ->匿名函数 -> 返回值不会处理，直接当作完整替代
-        # -------------------------------------------------------------------
+        """
+            参数1：要替换入的内容 字符串 f"![{image_summary}]({image_url})"
+            / 在sub里面代表分组替换，容易直接报错 
+            采用lambda ：不会转义，直接返回结果
+            参数2：要被替换的文档 字符串 md_content
+            返回值：替换后的文档 md_content
+        """
+
         md_content = rep.sub(lambda _: f"![{image_summary}]({image_url})", md_content)
 
     # 返回替换完成的最终MD内容

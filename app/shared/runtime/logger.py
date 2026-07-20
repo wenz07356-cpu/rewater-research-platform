@@ -29,7 +29,7 @@ LOG_FILE_LEVEL = os.getenv("LOG_FILE_LEVEL", "INFO").upper()
 LOG_FILE_RETENTION = os.getenv("LOG_FILE_RETENTION", "7 days")
 
 # -------------------------- 第三步：定义日志路径（自动推导项目根） --------------------------
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FILE_NAME = "app_{time:YYYYMMDD}.log"
 LOG_FILE_PATH = LOG_DIR / LOG_FILE_NAME
@@ -52,7 +52,7 @@ def init_logger():
     4. 配置日志格式、级别、分割、保留策略
     :return: 配置完成的loguru logger实例
     """
-    # 1. 移除loguru默认的控制台输出
+    # 1. 移除loguru默认的控制台输出（避免重复打印）
     logger.remove()
 
     # 2. 配置控制台输出（若.env开启）

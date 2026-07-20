@@ -7,6 +7,7 @@ image_name = "demo(1).png"
 rep = re.compile(r"\!\[.*?\]\(.*?" + re.escape(image_name) + r".*?\)")
 
 # 1. search：全文找【第一个】匹配 → 返回 match 对象  包含Match（内容，start，end）
+print(re.escape(image_name))
 match_obj = rep.search(md_content)
 print("1. search 结果：", match_obj.group() if match_obj else "未找到")
 

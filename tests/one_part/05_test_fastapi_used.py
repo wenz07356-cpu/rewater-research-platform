@@ -34,8 +34,6 @@ def login(user:UserSchema =None):
     print(f"接收到的json数据:{user}")
     return user
 
-# 驴蛋蛋 - 狗 -> 盗墓笔记 -> 吃死人肉长大! -> 能过尸洞 -> 尸蟞
-
 # file=value(文件) : UploadFile (真文件) 接收文件的类型  = File(文件的约束 规则)  account:str
 
 @erdaye.post("/upload/image")
@@ -71,12 +69,17 @@ from mimetypes import guess_type
 @erdaye.get("/html/import")
 def import_html():
 
-    import_html_path_obj:Path = PROJECT_ROOT / "app" / "resources" / "html" / "import.html"
+    import_html_path_obj:Path = PROJECT_ROOT / "app" / "process" / "import_"/ "page" / "import.html"
 
     return FileResponse(
+        # 文件名 不传使用路径原始文件名
         filename=import_html_path_obj.name,
+        # 文件展示方式：  inline：直接浏览器打开
+        # attachment 触发浏览器下载弹窗，把文件保存到本地
         content_disposition_type="inline",
+        #path 文件位置
         path=str(import_html_path_obj),
+        #文件MIME类型
         media_type="text/html"
     )
 

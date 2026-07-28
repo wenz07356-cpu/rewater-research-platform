@@ -28,15 +28,19 @@ def require_chunks(state: dict) -> list[dict]:
 def embed_chunks(chunks: list[dict], *, step: int = EMBEDDING_BATCH_SIZE) -> list[dict]:
     chunks_vector: list[dict] = []
     total = len(chunks)
+    #可以批量生成
     for index in range(0, total, step):
         try:
+            #获取本次的chunks
             step_chunks = chunks[index:index + step]
             vector_str_list = []
             for item in step_chunks:
                 item_name = item.get("item_name")
                 content = item.get("content", "")
                 vector_str_list.append(f"主体:{item_name},内容:{content}" if item_name else content)
+            #调用生成向量
             result = llm_provider.embed_documents(vector_str_list)
+            #赋值
             for i, chunk in enumerate(step_chunks):
                 chunk_new = chunk.copy()
                 chunk_new["dense_vector"] = result["dense"][i]

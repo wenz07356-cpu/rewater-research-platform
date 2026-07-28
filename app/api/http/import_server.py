@@ -41,6 +41,7 @@ app = FastAPI(
     description="企业化 RAG 导入服务，负责文件上传、导入执行与状态查询。",
     version="0.2.0",
 )
+#注册跨域资源共享（CORS）中间件 允许前端页面从不同域名/端口调用这个后端
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins) or ["*"],
@@ -67,7 +68,6 @@ def run_graph_task(task_id: str, local_dir: str, local_file_path: str):
     LangGraph全流程执行后台任务
     核心流程：初始化状态 → 流式执行图节点 → 实时更新任务状态 → 异常捕获
     任务状态更新：pending → processing → completed/failed
-    节点进度更新：每完成一个节点，将节点名加入done_list，供前端轮询查看
 
     :param task_id: 全局唯一任务ID，关联单个文件的全流程处理
     :param local_dir: 该任务的本地文件存储目录（含临时文件/解析结果）
@@ -85,19 +85,26 @@ def run_graph_task(task_id: str, local_dir: str, local_file_path: str):
         init_state["local_file_path"] = local_file_path  # 上传文件本地路径
 
         # 3. 流式执行LangGraph全流程（stream模式：实时获取每个节点的执行结果）
+        # event里面的是{key（节点名字）= {value(更新后的state)}，key（节点名字）= {value(更新后的state)}}
         for event in import_app.stream(init_state):
-            for node_name, node_result in event.items():
-                # 记录每个节点完成的日志，包含任务ID和节点名，方便追踪执行顺序
+        #items():把字典中所有键值对拆解成可遍历的元组[（键，值）]
+            for node_name, node_state_result in event.items():
+                # 记录每个节点完成的日志，包含任务ID和节点名，方便追踪执行顺序,
+                # []包裹task_id是约定俗称，方便分辨。
                 logger.info(f"[{task_id}] LangGraph节点执行完成：{node_name}")
-                # 将完成的节点名加入【已完成列表】，前端轮询/status/{task_id}可实时获取
         # 4. 全流程执行完成，更新任务全局状态为：已完成
         update_task_status(task_id, "completed")
         logger.info(f"[{task_id}] LangGraph全流程执行完毕，任务完成")
 
     except Exception as e:
         # 5. 捕获全流程异常，更新任务全局状态为：失败，并记录错误日志（含堆栈）
+        import traceback
+        traceback.print_exc()
         update_task_status(task_id, "failed")
-        logger.error(f"[{task_id}] LangGraph全流程执行失败，异常信息：{str(e)}", exc_info=True)
+        #exc_info=True  打印完整的异常堆栈，包括报错的文件路径、具体行号等
+        logger.error(
+            f"[{task_id}] LangGraph全流程执行失败，异常信息：{str(e)}", exc_info=True
+        )
 
 
 
@@ -112,10 +119,15 @@ from pathlib import Path
 
 
 @app.post("/upload", summary="文件上传接口", description="支持多文件批量上传，自动触发知识库导入全流程")
+#文件传参
+#单个文件file：UploadFile = File（...）
+#多个文件files：List[UploadFile] = File(...)
+#其他形式：Body（）主要是json请求体中读参数  Query（）主要是从URL中读参数
 async def upload_files(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...)
 ):
+
     """
     文件上传核心接口（不上传 MinIO）
     1. 接收前端上传的多文件（PDF/MD为主）
@@ -137,7 +149,6 @@ async def upload_files(
     # 2. 遍历处理每个上传的文件（多文件批量处理，各自独立生成TaskID）
     for file in files:
         # 生成全局唯一TaskID（UUID4），作为单个文件的全流程标识
-        #uuid -> 时区 / 时间戳 / ip地址 / mac地址（网卡唯一标识）
         task_id = str(uuid.uuid4())
         task_ids.append(task_id)
         logger.info(f"[{task_id}] 开始处理上传文件，文件名：{file.filename}，文件类型：{file.content_type}")
@@ -184,6 +195,7 @@ async def upload_files(
 # 访问地址：http://localhost:8000/status/{task_id} （GET请求）
 # ---------------------------------------
 # 2. 改造接口
+
 @app.get("/status/{task_id}",
          summary="任务状态查询",
          description="根据TaskID查询单个文件的处理进度和全局状态",
@@ -191,9 +203,7 @@ async def upload_files(
 async def get_task_progress(task_id: str):
     """
     任务状态查询接口
-    前端轮询此接口（如每秒1次），获取任务的实时处理进度
     返回数据均来自内存中的任务管理字典（task_utils.py），高性能无IO
-
     :param task_id: 全局唯一任务ID（由/upload接口返回）
     :return: ImportStatusResponse 格式响应
     """

@@ -6,7 +6,9 @@ from app.shared.runtime.logger import logger
 class ImportGraphState(TypedDict):
     #任务追踪
     task_id:Optional[str]
-    #传入文件地址
+    #传入后保存的文件夹
+    local_dir:Optional[str]
+    #传入文件地址=local_dir/file.filename
     local_file_path:Optional[str]
     #判断结果
     is_md_read_enabled:bool
@@ -15,8 +17,7 @@ class ImportGraphState(TypedDict):
     file_title:Optional[str]
     #pdf解析入口文件地址
     pdf_path:Optional[str]
-    # pdf解析输出目录
-    local_dir:Optional[str]
+
     #md文件/图片地址
     md_path: Optional[str]
     #切片原材料
@@ -43,6 +44,7 @@ graph_default_state: ImportGraphState = {
     'embedding_content':None,
 }
 
+#**overrides:可变关键字传参  自动将多个键值对转成字典
 def create_default_state(**overrides) -> ImportGraphState:
     """
     创建默认状态，支持覆盖。
@@ -50,6 +52,7 @@ def create_default_state(**overrides) -> ImportGraphState:
     :return:
     """
     new_state = copy.deepcopy(graph_default_state)
+    #update():直接原位修改，有就修改，没有key就新增。
     new_state.update(overrides)  #原地修改 无返回值
     return new_state
 
@@ -64,5 +67,6 @@ def get_default_state() -> ImportGraphState:
 
 if __name__ == '__main__':
     state = create_default_state(task_id=str(uuid.uuid4()),local_file_path = "**")
+    #字典转json输出，不用挤在一行，每个key一行。
     logger.info(json.dumps(state, indent=2,ensure_ascii=False))
 

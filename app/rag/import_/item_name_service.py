@@ -1,6 +1,9 @@
 """
 主体识别服务模块，负责从导入文档中识别主体名称并写入主体索引。
 """
+import json
+from pathlib import Path
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from pymilvus import DataType
@@ -20,11 +23,16 @@ from app.shared.utils.escape_milvus_string_utils import escape_milvus_string
 
 @step_log("validate_chunks_and_title")
 def validate_chunks_and_title(state: dict) -> tuple[list[dict], str]:
+    md_path = state["md_path"]
     chunks = state.get("chunks", [])
     file_title = state.get("file_title")
     if not chunks:
-        logger.error("chunks没有内容,无法继续业务!")
-        raise ValueError("chunks没有内容,无法继续业务!")
+        if md_path:
+            chunks_json_obj:Path = Path(md_path).with_name(f"{Path(md_path).stem}.json")
+            chunks = json.loads(chunks_json_obj.read_text(encoding="utf-8"))
+        if not chunks:
+            logger.error("chunks没有内容,无法继续业务!")
+            raise ValueError("chunks没有内容,无法继续业务!")
     if not file_title:
         logger.warning("file_title为空给与默认值处理!")
         file_title = "default_title"
@@ -44,6 +52,12 @@ def build_document_context(chunks: list[dict]) -> str:
 
 @step_log("recognize_item_name")
 def recognize_item_name(context: str, file_title: str) -> str:
+    """
+    识别item_name
+    :param context:
+    :param file_title:
+    :return:
+    """
     llm = llm_provider.chat()
     system_prompt_str = load_prompt("product_recognition_system")
     user_prompt_str = load_prompt("item_name_recognition", file_title=file_title, context=context)
@@ -52,13 +66,17 @@ def recognize_item_name(context: str, file_title: str) -> str:
         HumanMessage(content=user_prompt_str),
     ]
     item_name = (llm | StrOutputParser()).invoke(messages)
-    return item_name or file_title
+    if not item_name:
+        item_name = file_title
+        logger.warning(f"模型未识别到item_name,使用file_title")
+    return item_name
 
 
 @step_log("apply_item_name")
 def apply_item_name(chunks: list[dict], item_name: str) -> list[dict]:
     for chunk in chunks:
         chunk["item_name"] = item_name
+    logger.info(f"完成了chunks中添加item_name")
     return chunks
 
 
@@ -84,8 +102,8 @@ def prepare_item_name_collection() -> None:
     schema.add_field(field_name="dense_vector", datatype=DataType.FLOAT_VECTOR, dim=MILVUS_VECTOR_DIM)
     schema.add_field(field_name="sparse_vector", datatype=DataType.SPARSE_FLOAT_VECTOR)
     #3.2索引问题：高效的查询数据
-    #稠密
     index_params = milvus_client.prepare_index_params()
+    #稠密
     index_params.add_index(
         field_name="dense_vector",
         index_type="HNSW",   #稠密向量：1.AUTOAINDEX(不明确底层实现原理)  2.FLAT IVF_FLAT HNSW
@@ -93,10 +111,10 @@ def prepare_item_name_collection() -> None:
         #IVF_FLAT 分类存储，每类有一个中心点，先比较中心点确定类别，在细化搜索（准确 / 效率 比较中和）
         #HNSW 多层图导航 类似 地图... 逐层向下查找.. (效率 / 准确率  比较高 占有空间最大)
         params = {
-            "M" : 64,
-            "efConstruction" : 100,
+            "M" : 64,  #每个点最大的链接数量
+            "efConstruction" : 100,  #考虑链接的范围  在这个范围内确定。
         },
-        metric_type="COSINE"    #稠密向量相似度可以选：cosine = ip -> 速度更快一些 归一化  L2  更慢
+        metric_type="IP"    #稠密向量相似度可以选：cosine = ip -> 速度更快一些 归一化  L2  更慢
     )
 
     #稀疏
@@ -106,10 +124,17 @@ def prepare_item_name_collection() -> None:
         #正排索引  根据向量索引
         index_name="sparse_vector_index",
         metric_type="IP",  #稠密向量相似度可以选 ：IP
-        params={"inverted_index_algo": "DAAT_MAXSCORE"},  #根据权重值做优化 ，降低一些低权重数据的排名！！
+        #DAAT低权重的直接进不来！！
+        # 如果「已累计得分 + 剩余所有未处理词条的最大可能得分」都超不过当前 TopK 堆里的最低分，
+        # 就直接跳过这篇文档，不用再计算剩下的词条
+        #TAAT全部操作
+        params={"inverted_index_algo": "DAAT_MAXSCORE"},
     )
     #创建集合
-    milvus_client.create_collection(collection_name=collection_name, schema=schema, index_params=index_params)
+    milvus_client.create_collection(collection_name=collection_name,
+                                    schema=schema,
+                                    index_params=index_params
+                                    )
 
 
 @step_log("upsert_item_name")

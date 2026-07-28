@@ -4,12 +4,12 @@
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.shared.runtime.logger import logger, step_log
-from app.rag.import_.config import CHUNK_MAX_SIZE, CHUNK_SIZE
+from app.rag.import_.config import CHUNK_MAX_SIZE, CHUNK_SIZE, CHUNK_OVERLAP, CHUNK_MIN
 
 
 @step_log("load_markdown_content")
@@ -47,84 +47,92 @@ def load_markdown_content(state: dict) -> tuple[str, str]:
 
 
 @step_log("split_by_titles")
-def split_by_titles(md_content: str, file_title: str) -> list[dict]:
+def split_by_titles(md_content: str, file_title: str) -> list[dict[str, str]]:
     """
-    根据语义切割，根据标题切割
-    :param md_content:
-    :param file_title:
-    :return:
+    根据Markdown标题对文档进行语义分块；
+    重点考虑三个地方：代码串（不能删空行）、开头（没标题，赋值）、结尾（）。
+    :param md_content: Markdown格式的文档内容
+    :param file_title: 文档整体标题，用于前言内容的兜底标题
+    :return: 分块列表，每个块包含 content、title、file_title 三个字段
     """
-    #^ 表示开头匹配
-    #空格 = \s
-    #量词 就一个不用写，* 很多个   范围表示 {1，6}  + 至少有一个
-    # . 任意字符串
-    reg = re.compile(r"^\s*#{1,6}\s.+")
+
+    # 正则
+    title_pattern = re.compile(r"^\s*#{1,6}\s+.+")
     lines = md_content.split("\n")
-    chunks: list[dict] = []
-    current_title = None
-    current_title_lines: list[str] = []
-    is_code_block = False
-    chunk_size = 0
+
+    chunks: list[dict[str, str]] = []
+    #状态变量
+    current_title: str | None = None
+    current_lines: list[str] = []
+    in_code_block = False
+    # 记录每个级别最后出现的标题，用于维护父子关系
+
 
     for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            logger.warning("处理碰到空行！跳过本次处理")
+        # 仅用strip后的字符串做逻辑判断，原始行完整保留，不破坏格式
+        stripped_line = raw_line.strip()
+
+        # 1. 识别代码块边界，翻转状态
+        if stripped_line.startswith("```") or stripped_line.startswith("~~~"):
+            in_code_block = not in_code_block
+            current_lines.append(raw_line)
             continue
-        if line.startswith("```") or line.startswith("~~~"):
-            is_code_block = not is_code_block
-            current_title_lines.append(line)
+
+        # 2. 仅跳过非代码块内的空行，代码块内空行完整保留
+        if not stripped_line:
+            current_lines.append(raw_line)
             continue
 
-        if reg.match(line) and not is_code_block:
-            if current_title and len(current_title_lines) > 1:
-                chunks.append(
-                    {
-                        "content": "\n".join(current_title_lines),
-                        "title": current_title,
-                        "file_title": file_title,
-                    }
-                )
-            current_title = line
-            if not current_title and len(current_title_lines) > 0:
-                current_title_lines.append(line)
-            else:
-                current_title_lines = [current_title]  #将标题设置为第一行字符串
-            chunk_size += 1
-        else:
-            current_title_lines.append(line)
+        # 3. 匹配到有效标题且不在代码块内：提交上一分块，开启新分块
+        if title_pattern.match(stripped_line) and not in_code_block:
+            # 提交上一个分块（包含第一个标题前的前言内容）
+            if current_lines and len(current_lines) > 1:
+                block_title = current_title if current_title else file_title
+                chunks.append({
+                    "content": "\n".join(current_lines),
+                    "title": block_title,
+                    "file_title": file_title,
+                    "parent_title": block_title,
+                })
 
-    #最后一次可能没有结算
+            # 初始化新分块，保留原始标题行；如需纯标题可替换为 clean_title(stripped_line)
+            current_title = stripped_line
+            current_lines = [raw_line]
+            continue
 
-    if current_title:
-        chunks.append(
-            {
-                "content": "\n".join(current_title_lines),
-                "title": current_title,
-                "file_title": file_title,
-            }
-        )
+        # 4. 普通正文/代码块内容：直接追加原始行
+        current_lines.append(raw_line)
 
-    if chunk_size == 0:
+    # 循环结束，提交最后一个分块
+    if current_lines:
+        block_title = current_title if current_title else file_title
+        chunks.append({
+            "content": "\n".join(current_lines),
+            "title": block_title,
+            "file_title": file_title,
+            "parent_title": block_title,
+        })
+
+    # 极端兜底：无任何有效分块时返回默认块
+    if not chunks:
         chunks.append({"content": md_content, "title": "default", "file_title": file_title})
-        chunk_size = 1
-    logger.info(f"完成语义切割,切块数量:{chunk_size},内容:{chunks[:3]}")
+        logger.warning(f"切割完成，触发兜底，分块数量1个")
+    logger.info(f"完成语义切割，分块数量：{len(chunks)}，前3块标题：{[c['title'] for c in chunks[:3]]}")
     return chunks
 
 
-def _split_long_section(section: dict[str, Any], max_length: int = CHUNK_MAX_SIZE) -> list[dict[str, Any]]:
+def _split_long_section(section: dict[str, Any]) -> list[dict[str, Any]]:
     """
     【辅助函数】超长章节二次切分（核心适配LangChain分割器）
     功能：单个章节内容超限时，按「段落→句子→空格」从粗到细切分，保留语义
     切分规则：1.先按空行(段落) 2.再按换行 3.最后按中英文标点/空格
     :param section: 原始章节字典，必须包含content键，可选title/file_title等
-    :param max_length: 单个Chunk最大字符长度，默认使用全局配置
     :return: 切分后的子章节列表，每个子章节带父标题/序号等元信息
     """
     # 内容空值兜底：无内容直接返回原章节
     content = section.get("content", "") or ""
     # 长度未超限，无需切分，直接返回原章节（列表格式保持统一）
-    if len(content) <= max_length:
+    if len(content) <= CHUNK_MAX_SIZE:
         return [section]
 
     # 标准化预处理：统一换行符，避免不同系统(\r\n/\n)导致的切分异常
@@ -134,35 +142,35 @@ def _split_long_section(section: dict[str, Any], max_length: int = CHUNK_MAX_SIZ
     # 标题前缀：带空行分隔，与正文区分开
     prefix = f"{title}\n\n" if title else ""
     # 计算正文可用长度：总长度 - 标题前缀长度（避免标题占满Chunk额度）
-    available_len = max_length - len(prefix)
+    available_len = CHUNK_MAX_SIZE - len(prefix)
     # 极端情况：标题长度超过阈值，无法切分，返回原章节
-    if available_len <= 0:
+    if available_len <= 30:
         logger.warning(f"章节标题过长，无法切分：{title[:20]}...")
         return [section]
 
     # 清理正文重复标题：避免原章节中正文开头重复标题，导致子Chunk内容冗余
     body = content
     if title and body.lstrip().startswith(title):
-        body = body[body.find(title) + len(title):].lstrip()
+        body = body[len(title):].lstrip()
 
     # 初始化LangChain递归分割器（核心工具：按优先级分隔符切分，保留语义）
     # separators：分割符优先级（从粗到细），优先按大语义单元切分，最后才硬拆
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=available_len,  # 正文部分最大长度（已扣除标题）
+        chunk_size=CHUNK_SIZE - len(prefix),  # 正文部分最大长度（已扣除标题）
         chunk_overlap=0,           # 无重叠：按标题切分后语义完整，无需重叠
         # 分割符优先级：空行(段落)→换行→中文标点→英文标点→空格，最后硬拆
-        separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " "],
+        separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";"],
     )
 
     # 切分正文并组装子章节（带完整元信息，便于溯源）
     sub_sections: list[dict[str, Any]] = []
     for idx, chunk in enumerate(splitter.split_text(body), start=1):
         # 清理空内容：跳过切分后的空字符串
-        text = chunk.strip()
+        text = chunk.strip("\n")
         if not text:
-            continue
+           continue
         # 组装子Chunk完整内容：标题前缀 + 切分后的正文
-        full_text = (prefix + text).strip()
+        full_text = (prefix + text).strip("\n")
         # 子章节元信息：保留父级关联，添加序号，便于后续检索/溯源
         sub_sections.append({
             "title": f"{title}-{idx}" if title else f"chunk-{idx}",  # 子Chunk标题（带序号）
@@ -176,14 +184,14 @@ def _split_long_section(section: dict[str, Any], max_length: int = CHUNK_MAX_SIZ
     return sub_sections
 
 def _merge_short_sections(sections: list[dict[str, Any]],
-    min_length: int = CHUNK_SIZE,
+    min_length: int = CHUNK_MIN,
     max_length: int = CHUNK_MAX_SIZE,
 ) -> list[dict[str, Any]]:
 
     """
     先指向一个基础（pre），作为参照！
-    如果base小于400，尝试将后面的合并入。
-    合并的前提：base < 400 同一个parent_title 合并后小于1000
+    如果base小于300，尝试将后面的合并入。
+    合并的前提：base < 300 同一个parent_title 合并后小于1000
 
     【辅助函数】过短章节合并（减少碎片化，提升检索效果）
     核心规则：仅合并「同父标题」且「当前块长度不足阈值」的相邻Chunk，避免跨章节合并
@@ -247,7 +255,7 @@ def _merge_short_sections(sections: list[dict[str, Any]],
 def refine_chunks(
     sections: list[dict],
     max_len: int = CHUNK_MAX_SIZE,
-    min_len: int = CHUNK_SIZE,
+    min_len: int = CHUNK_MIN,
 ) -> list[dict]:
     """
         【步骤4】Chunk精细化处理（核心：长切短合，适配大模型/检索）
@@ -255,7 +263,7 @@ def refine_chunks(
         :param sections: 步骤3处理后的章节列表
         :param max_len: 单个Chunk最大字符长度
         :return: 长度适中、低碎片化的最终Chunk列表
-        """
+    """
     # 边界处理：最大长度无效（空/≤0），直接返回原章节，避免切分异常
     if not max_len or max_len <= 0:
         logger.warning(f"步骤4：Chunk最大长度配置无效（{max_len}），跳过精细化处理")
@@ -266,7 +274,7 @@ def refine_chunks(
     for sec in sections:
         # 对每个章节执行超长切分，结果平铺加入列表（避免嵌套）
         # extend 的作用就是： 把另一个列表（或可迭代对象）里的“元素”，一个个拆出来，直接追加到当前列表的尾部
-        refined_split.extend(_split_long_section(sec, max_len))
+        refined_split.extend(_split_long_section(sec))
     logger.info(f"步骤4-1：超长章节切分完成，共生成{len(refined_split)}个初始子Chunk")
 
     # 阶段2：合并过短章节 → 减少碎片化，提升后续检索/大模型调用效果
@@ -292,7 +300,7 @@ def refine_chunks(
 
 @step_log("backup_chunks")
 def backup_chunks(chunks: list[dict], md_path: str) -> None:
-    chunks_json_path = Path(md_path).parent / "chunks.json"
+    chunks_json_path = Path(md_path).parent / f"{Path(md_path).stem}.json"
     chunks_json_path.write_text(json.dumps(chunks, ensure_ascii=False, indent=4), encoding="utf-8")
 
 

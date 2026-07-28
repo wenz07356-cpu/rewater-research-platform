@@ -58,7 +58,7 @@ def validate_pdf_paths(state: dict) -> tuple[Path, Path]:
     local_dir_obj = Path(local_dir)
 
     # 校验PDF文件是否真实存在，不存在则抛出异常
-    if not pdf_path_obj.exists():
+    if not pdf_path_obj.exists() or not pdf_path_obj.is_file():
         logger.error(f"pdf_path:{pdf_path_obj},但是没有文件存在!")
         raise FileNotFoundError(f"pdf_path:{pdf_path_obj},但是没有文件存在!")
 
@@ -77,14 +77,14 @@ def upload_pdf_and_poll(pdf_path_obj: Path) -> str:
     核心功能：上传PDF文件到MinerU服务，并轮询等待解析完成，最终返回解析结果的下载地址
     业务逻辑：
     (1)配置检查；
-    (2)构造请求报文
-    (3)网络状态确认
-    (4)收到响应报文
-    (5)业务状态确认
-    (6)获取上传地址，上传，用Session+put 标准操作
-    (7)轮询获取下载地址(构造请求报文，网络状态)
-    :param pdf_path_obj: 本地PDF文件路径对象
-    :return: 解析完成后的ZIP压缩包下载地址
+    (2)构造请求报文；
+    (3)网络状态确认；
+    (4)收到响应报文；
+    (5)业务状态确认；
+    (6)获取上传地址，上传，用Session+put 标准操作；
+    (7)轮询获取下载地址(构造请求报文，网络状态)；
+    :param pdf_path_obj: 本地PDF文件路径对象；
+    :return: 解析完成后的ZIP压缩包下载地址；
     """
 
     # 1. 校验MinerU服务配置（base_url和api_key必须存在）
@@ -113,6 +113,18 @@ def upload_pdf_and_poll(pdf_path_obj: Path) -> str:
         raise RuntimeError(f"申请上传地址失败,返回状态码为:{response.status_code},网络状态错误，无法继续业务!")
 
     # 5. 解析返回结果，校验业务状态码
+        """
+        响应示例
+        {
+        "code": 0,
+        "data": {
+        "batch_id": "2bb2f0ec-a336-4a0a-b61a-241afaf9cc87",
+        "file_urls": ["https://***"]
+        },
+        "msg": "ok",
+        "trace_id": "c876cd60b202f2396de1f9e39a1b0172"
+}
+        """
     result_dict = response.json()
     if result_dict["code"] != 0:
         logger.error(
@@ -275,10 +287,12 @@ def download_and_extract_markdown(zip_url: str, local_dir_path_obj: Path, stem: 
     # 创建新的解压目录
     extract_path_obj.mkdir(parents=True, exist_ok=True)
     # 解压 ZIP 包到目标目录
+    #unpack_archive(原目录，现目录)
     shutil.unpack_archive(zip_path_obj, extract_path_obj)
 
     # ---------------------- 3. 查找所有 MD 文件 ----------------------
     # 递归查找解压目录下所有 .md 文件
+    #rglob("*.md")  Path下面的函数，遍历文件夹中文件，生成一个生成器。
     md_file_list = list(extract_path_obj.rglob("*.md"))
     # 没有找到 MD 文件则抛出异常
     if not md_file_list:
@@ -306,5 +320,6 @@ def download_and_extract_markdown(zip_url: str, local_dir_path_obj: Path, stem: 
     # ---------------------- 5. 重命名为统一规范名称 ----------------------
     # 将选中的 MD 重命名为 {stem}.md（和 PDF 同名）
     logger.info(f"触发重命名机制，原名称：{md_file.stem},目标名称{stem}")
+    #with_name只修改path对象  rename是真的在磁盘原位改名。
     return target_md_obj.rename(target_md_obj.with_name(f"{stem}.md"))
 

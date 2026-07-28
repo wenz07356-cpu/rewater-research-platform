@@ -30,6 +30,10 @@ def enrich_markdown_images(state: dict) -> dict:
     #1.参数校验和获取
     md_content, md_path_obj, images_path_obj = load_markdown_and_image_dir(state)
     #2.没有文件，提前终止
+    #iterdir（）里面只遍历一层子目录。
+    #遍历所有子目录rglob（"*"）  筛选rglob（"*.md"）
+    #and 同时为true才为true
+    #next（）迭代器专用写法，只取第一个。
     if not (images_path_obj.is_dir() and next(images_path_obj.iterdir(), None) is not None):
         logger.info(f"{md_path_obj}文档对应的images为空，不需要图片识别，提前结束当前节点")
         return state
@@ -120,13 +124,16 @@ def summarize_images(image_context_list: list[tuple[str, str, tuple[str, str]]],
     """
     image_summaries_dict: Dict[str, str] = {}
     #1.获取模型对象
+    #创建模型实例：
     vm_model = llm_provider.vision_chat()
     for image_name, image_path_str, context in image_context_list:
         #2.封装提示词（图片 | 文本）
         #导入文本提示词
+        #限流保护
         apply_api_rate_limit()
         image_context_prompt = load_prompt("image_summary", root_folder=stem, image_content=context)
         #处理图片的base64字符串
+        #先转化为base字节，然后转化为普通字符串，才能放进json
         image_path_obj = Path(image_path_str)
         image_data = base64.b64encode(image_path_obj.read_bytes()).decode(encoding="utf-8")
         message = HumanMessage(
@@ -145,6 +152,7 @@ def summarize_images(image_context_list: list[tuple[str, str, tuple[str, str]]],
             ]
         )
         #3.封装一个调用chains 加入的message用列表
+        #vm_model 输出AImessage   StrOutputParser 转成字符串
         summary = (vm_model | StrOutputParser()).invoke([message])
         image_summaries_dict[image_name] = summary
         logger.info(f"完成：{image_name}意图识别")
@@ -212,7 +220,6 @@ def upload_images_and_replace(
             # 构建图片在线URL并保存
             image_url = minio_gateway.build_image_url(stem, image_name)
             image_url_dict[image_name] = image_url
-
             logger.info(f"{image_name}已经上传到minio服务器，访问地址：{image_url}")
         except Exception as e:
             # 打印完整异常堆栈，直接看到失败根因

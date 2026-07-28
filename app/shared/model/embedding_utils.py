@@ -82,8 +82,8 @@ def generate_embeddings(texts: list[str]) -> dict[str, list]:
         processed_sparse = []
         # # 把模型输出的 CSR 稀疏矩阵 ，按“每条文本一行”拆成 {特征索引: 权重} 字典
         # # - indices ：非零元素的“列号（特征ID）”
-        # # - data ：对应列号的权重值
-        # # - indptr ：每一行在 indices/data 里的起止位置指针
+        # # - data ：对应列号的权重
+        # # - indptr ：前i行有多少个非零元素，从零行开始取值
         # # 数据示例:
         # # indices = [3, 8, 20, 1, 9]
         # # data    = [0.7, 0.2, 0.1, 0.6, 0.4]  -> milvus -> 稠密向量 [1024] 稀疏向量 : {index:值,index:值}
@@ -109,7 +109,7 @@ def generate_embeddings(texts: list[str]) -> dict[str, list]:
             # embeddings["dense"] = [[1稠密向量],[2稠密向量],[...]  -> 1024]
             # embeddings["sparse"] = [[1稀疏向量],[2稠密向量],[...]  -> 1024]
             "dense": [emb.tolist() for emb in embeddings["dense"]],  # 嵌套列表，与输入文本一一对应
-            "sparse": processed_sparse  # 字典列表，模型已做L2归一化
+            "sparse": processed_sparse  # 字典列表
         }
         logger.success(f"{len(texts)}条文本向量生成完成，格式已适配工业级使用")
         return result

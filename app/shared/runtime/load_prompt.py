@@ -20,6 +20,7 @@ def load_prompt(name: str, **kwargs) -> str:
     raw_prompt = prompt_path.read_text(encoding='utf-8')
 
     # 4. 核心：如果传了参数，渲染占位符；没传参，直接返回原文本
+
     if kwargs:
         rendered_prompt = raw_prompt.format(**kwargs)
         logger.debug(f"提示词渲染成功，替换变量：{list(kwargs.keys())}")

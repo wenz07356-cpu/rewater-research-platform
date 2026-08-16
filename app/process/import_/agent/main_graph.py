@@ -1,139 +1,72 @@
-from langgraph.graph import StateGraph, END
+"""文档导入 LangGraph 编排。"""
+
+from langgraph.graph import END, StateGraph
+
+from app.process.import_.agent.nodes.node_bge_embedding import node_bge_embedding
+from app.process.import_.agent.nodes.node_document_metadata import (
+    node_document_metadata,
+)
+from app.process.import_.agent.nodes.node_document_split import node_document_split
+from app.process.import_.agent.nodes.node_entry import node_entry
+from app.process.import_.agent.nodes.node_import_milvus import node_import_milvus
+from app.process.import_.agent.nodes.node_md_img import node_md_img
+from app.process.import_.agent.nodes.node_pdf_to_md import node_pdf_to_md
+from app.process.import_.agent.state import ImportGraphState
 from app.shared.runtime.logger import logger
 
-from app.process.import_.agent.state import ImportGraphState
-from app.process.import_.agent.nodes.node_entry import node_entry
-from app.process.import_.agent.nodes.node_pdf_to_md import node_pdf_to_md
-from app.process.import_.agent.nodes.node_md_img import node_md_img
-from app.process.import_.agent.nodes.node_document_split import node_document_split
-from app.process.import_.agent.nodes.node_item_name_recognition import node_item_name_recognition
-from app.process.import_.agent.nodes.node_bge_embedding import node_bge_embedding
-from app.process.import_.agent.nodes.node_import_milvus import node_import_milvus
 
-
-#1.定义图的构建对象，并指定全局state  (StateGraph)
-import_graph_builder = StateGraph(ImportGraphState)
-
-#2.添加图节点(add_node)
-import_graph_builder.add_node(node_entry)
-import_graph_builder.add_node(node_pdf_to_md)
-import_graph_builder.add_node(node_md_img)
-import_graph_builder.add_node(node_document_split)
-import_graph_builder.add_node(node_item_name_recognition)
-import_graph_builder.add_node(node_bge_embedding)
-import_graph_builder.add_node(node_import_milvus)
-
-#3.设置起始节点(set_entry_point)
-import_graph_builder.set_entry_point("node_entry")
-
-
-#4.条件边函数
 def node_entry_after(state: ImportGraphState) -> str:
-    """
-    判断类型文件
-    :param state:
-    :return:目标节点名称
-    """
+    """根据入口识别出的文件类型选择下一节点。
 
+    输入：入口节点更新后的状态。
+    输出：Markdown 图片节点、PDF 解析节点或 ``END``。
+    步骤：优先检查 Markdown 开关，再检查 PDF 开关；均未开启时告警结束。
+    """
+    file_path = state.get("local_file_path")
     if state.get("is_md_read_enabled", False):
-        logger.info(f"传入文件地址：{state.get('local_file_path')}，判定传入的文件是md类型，所以跳转到node_md_img")
+        logger.info(f"文件已识别为 Markdown：{file_path}")
         return "node_md_img"
-    elif state.get("is_pdf_read_enabled", False):
-        logger.info(f"传入文件地址：{state.get('local_file_path')}，判定传入的文件是pdf类型，所以跳转到node_pdf_to_md")
+    if state.get("is_pdf_read_enabled", False):
+        logger.info(f"文件已识别为 PDF：{file_path}")
         return "node_pdf_to_md"
-    else:
-        logger.warning(f"传入文件地址：{state.get('local_file_path')}，不支持该文档类型处理")
-        return END
+    logger.warning(f"文件类型不受支持，导入流程结束：{file_path}")
+    return END
 
 
-import_graph_builder.add_conditional_edges("node_entry", node_entry_after, {
-    "node_md_img": "node_md_img",
-    "node_pdf_to_md": "node_pdf_to_md",
-    END: END
-})
-#5.设置静态边
-import_graph_builder.add_edge("node_pdf_to_md", "node_md_img")
-import_graph_builder.add_edge("node_md_img", "node_document_split")
-import_graph_builder.add_edge("node_document_split", "node_item_name_recognition")
-import_graph_builder.add_edge("node_item_name_recognition", "node_bge_embedding")
-import_graph_builder.add_edge("node_bge_embedding", "node_import_milvus")
-import_graph_builder.add_edge("node_import_milvus", END)
+def build_import_graph():
+    """构建并编译文档导入图。
 
-#6.编译图对象
-import_app = import_graph_builder.compile()
+    核心功能：集中声明节点与边，保证 metadata、切分、向量化和索引顺序一致。
+    输入：无。
+    输出：已编译、可 invoke/stream 的 LangGraph 应用。
+    步骤：注册节点，设置入口和类型路由，再连接静态处理链。
+    """
+    builder = StateGraph(ImportGraphState)
+    builder.add_node("node_entry", node_entry)
+    builder.add_node("node_pdf_to_md", node_pdf_to_md)
+    builder.add_node("node_md_img", node_md_img)
+    builder.add_node("node_document_metadata", node_document_metadata)
+    builder.add_node("node_document_split", node_document_split)
+    builder.add_node("node_bge_embedding", node_bge_embedding)
+    builder.add_node("node_import_milvus", node_import_milvus)
+    builder.set_entry_point("node_entry")
 
-if __name__ == "__main__":
-    from app.shared.utils.path_util import PROJECT_ROOT
-    import os
+    builder.add_conditional_edges(
+        "node_entry",
+        node_entry_after,
+        {
+            "node_md_img": "node_md_img",
+            "node_pdf_to_md": "node_pdf_to_md",
+            END: END,
+        },
+    )
+    builder.add_edge("node_pdf_to_md", "node_md_img")
+    builder.add_edge("node_md_img", "node_document_metadata")
+    builder.add_edge("node_document_metadata", "node_document_split")
+    builder.add_edge("node_document_split", "node_bge_embedding")
+    builder.add_edge("node_bge_embedding", "node_import_milvus")
+    builder.add_edge("node_import_milvus", END)
+    return builder.compile()
 
-    # 全流程测试：验证PDF导入→Milvus入库完整链路
-    logger.info("===== 开始执行知识图谱导入全流程测试 =====")
 
-    # 1. 构造测试文件路径（复用你项目的doc目录）
-    #os.path 文件路径方案 里面都是str 如果存在path，自动转str
-    #os.path.join（str，str）不用斜杠，自动拼接
-    #os.path.makedirs(path,exist_ok=True)不存在就创建目录
-    #os.path.basename(path)/dirname(path)/abspath(path)/splitext（path）[1]/splitext（path）[0]
-    #pathlib path
-    #path/"doc" 拼接里面第一个是path 后面是str，自动转path
-    #path.exist（）
-    #path.name
-    #path.suffix
-    #path.mkdir(parents=True,exist_ok=True)
-    test_pdf_name = os.path.join(r"doc/4.质量论文", "再生水厂平面布局分析与节地策略探讨.pdf")
-    test_pdf_path = os.path.join(PROJECT_ROOT, test_pdf_name)
-
-    # 2. 构造输出目录（存放MD/图片等中间文件）
-    test_output_dir = os.path.join(PROJECT_ROOT, "output")
-    os.makedirs(test_output_dir, exist_ok=True)  # 不存在则创建
-
-    # 3. 校验测试PDF文件是否存在
-    if not os.path.exists(test_pdf_path):
-        logger.error(f"全流程测试失败：测试PDF文件不存在，路径：{test_pdf_path}")
-        logger.info("请检查文件路径，或手动将测试文件放入项目根目录的doc文件夹中")
-    else:
-        # 4. 构造测试状态（贴合实际业务入参，开启PDF解析开关）
-        test_state = ImportGraphState({
-            "task_id": "test_kg_import_workflow_001",  # 测试任务ID
-            "local_file_path": test_pdf_path,  # 测试PDF文件路径
-            "local_dir": test_output_dir,  # 中间文件输出目录
-            "is_pdf_read_enabled": True,  # 开启PDF解析（核心开关）
-            "is_md_read_enabled": False  # 关闭MD解析
-        })
-        try:
-            logger.info(f"测试任务启动，PDF文件路径：{test_pdf_path}")
-            logger.info(f"中间文件输出目录：{test_output_dir}")
-            logger.info("开始执行全流程节点，依次执行：entry→pdf2md→md_img→split→item_name→embedding→milvus")
-
-            # 5. 执行LangGraph全流程（流式执行，打印节点执行进度）
-            final_state = None
-            for step in import_app.stream(test_state, stream_mode="values"):
-                # 打印当前执行完成的节点（流式输出更直观）
-                current_node = list(step.keys())[-1] if step else "未知节点"
-                logger.info(f"✅ 节点执行完成：{current_node}")
-                final_state = step  # 保存最终状态
-
-            # 6. 全流程执行完成，结果预览和核心指标打印
-            if final_state:
-                logger.info("-" * 80)
-                logger.info("===== 全流程测试执行成功，核心结果预览 =====")
-
-                # 提取核心结果指标
-                chunks = final_state.get("chunks", [])
-                chunk_count = len(chunks)
-                md_content = final_state.get("md_content", "")[:150]  # MD内容前150字符
-                item_name = final_state.get("item_name", "未识别")  # 主体名称
-                has_embedding = all("dense_vector" in c and "sparse_vector" in c for c in chunks) if chunks else False
-                has_chunk_id = all("chunk_id" in c for c in chunks) if chunks else False
-
-                # 打印核心指标
-                logger.info(f"📄 PDF转MD内容预览（前150字符）：{md_content}...")
-                logger.info(f"🏷️  识别的主体名称：{item_name}")
-                logger.info(f"📝 文档切分总切片数：{chunk_count}")
-                logger.info(f"🔍 所有切片是否完成向量化：{'是' if has_embedding else '否'}")
-                logger.info(f"🗄️  所有切片是否完成Milvus入库（含chunk_id）：{'是' if has_chunk_id else '否'}")
-                logger.info(f"📂 最终状态包含的核心键：{list(final_state.keys())}")
-                logger.info("-" * 80)
-        except Exception as e:
-            logger.exception(f"===== 全流程测试运行失败 =====")
-    logger.info("===== 全流程测试结束 =====")
+import_app = build_import_graph()

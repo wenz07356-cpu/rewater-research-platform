@@ -33,25 +33,30 @@ def get_milvus_client() -> MilvusClient | None:
         return None
 
 
-def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None, sparse_params=None, expr=None,
-                                  limit=5):
+def create_hybrid_search_requests(
+    dense_vector,
+    sparse_vector,
+    dense_params=None,
+    sparse_params=None,
+    expr=None,
+    limit=5,
+):
     """
     构建Milvus混合搜索请求对象
     分别创建稠密/稀疏向量的搜索请求，用于后续混合搜索融合
     :param dense_vector: 文本生成的稠密向量
     :param sparse_vector: 文本生成的稀疏向量
-    :param dense_params: 稠密向量搜索参数，默认使用余弦相似度
+    :param dense_params: 稠密向量搜索参数，默认使用内积
     :param sparse_params: 稀疏向量搜索参数，默认使用内积相似度
     :param expr: 搜索过滤表达式，用于精准筛选数据
     :param limit: 单向量搜索返回结果数量，默认5
     :return: 搜索请求列表，包含[dense_req, sparse_req]
     """
-    # 稠密向量默认搜索参数：余弦相似度（COSINE），适配BGE-M3稠密向量并与建库参数保持一致
+    # 导入集合的稠密、稀疏索引均使用 IP，查询参数必须保持一致。
     if dense_params is None:
-        dense_params = {"metric_type": "COSINE"}
-    # 稀疏向量默认搜索参数：内积（IP），适配BGE-M3稀疏向量
+        dense_params = {"metric_type": "IP"}
     if sparse_params is None:
-        sparse_params = {"metric_type": "COSINE"}
+        sparse_params = {"metric_type": "IP"}
 
     # 构建稠密向量搜索请求，关联Milvus的dense_vector字段 近似最近邻（ANN）检索请求的核心类
     dense_req = AnnSearchRequest(
@@ -74,8 +79,16 @@ def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None
     return [dense_req, sparse_req]
 
 
-def hybrid_search(client, collection_name, reqs, ranker_weights=(0.5, 0.5), norm_score=False, limit=5,
-                  output_fields=None, search_params=None):
+def hybrid_search(
+    client,
+    collection_name,
+    reqs,
+    ranker_weights=(0.5, 0.5),
+    norm_score=False,
+    limit=5,
+    output_fields=None,
+    search_params=None,
+):
     """
     执行Milvus稠密+稀疏向量混合搜索
     基于WeightedRanker实现双向量搜索结果加权融合，提升检索准确性
@@ -107,7 +120,7 @@ def hybrid_search(client, collection_name, reqs, ranker_weights=(0.5, 0.5), norm
             output_fields=output_fields,
             search_params=search_params
         )
-        # res [[{id:111,distance:0.9,entity:{item_name:烫金机}},{},{},{},{}]]  || data = [1,2,3] => [[],[],[]]
+        # Milvus 对单条查询也返回二维列表：外层对应查询数量。
         logger.info(f"Milvus混合搜索完成，集合[{collection_name}]共检索到{len(res[0])}条结果")
         return res
     except Exception as e:

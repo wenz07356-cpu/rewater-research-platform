@@ -1,72 +1,59 @@
-import copy
-import json
-import uuid
-from typing import TypedDict, Optional
-from app.shared.runtime.logger import logger
-class ImportGraphState(TypedDict):
-    #任务追踪
-    task_id:Optional[str]
-    #传入后保存的文件夹
-    local_dir:Optional[str]
-    #传入文件地址=local_dir/file.filename
-    local_file_path:Optional[str]
-    #判断结果
-    is_md_read_enabled:bool
-    is_pdf_read_enabled:bool
-    #兜底item_name
-    file_title:Optional[str]
-    #pdf解析入口文件地址
-    pdf_path:Optional[str]
+"""导入 LangGraph 的状态契约与默认值。"""
 
-    #md文件/图片地址
-    md_path: Optional[str]
-    #切片原材料
-    md_content:Optional[str]
-    #载体
-    chunks:Optional[list[str]]  # 根据实际元素类型调整
-    #文档主语
-    item_name:Optional[str]
-    #向量数据库
-    embedding_content:Optional[list[list[float]]] #根据实际元素类型调整
+from __future__ import annotations
+
+import copy
+from typing import Any, TypedDict
+
+
+class ImportGraphState(TypedDict, total=False):
+    """导入流程各节点共享的可选状态字段。"""
+
+    task_id: str | None
+    local_dir: str | None
+    local_file_path: str | None
+    is_md_read_enabled: bool
+    is_pdf_read_enabled: bool
+    file_title: str | None
+    pdf_path: str | None
+    md_path: str | None
+    md_content: str | None
+    document_metadata: dict[str, Any] | None
+    document_id: str | None
+    document_type: str | None
+    chunks: list[dict[str, Any]] | None
+
 
 graph_default_state: ImportGraphState = {
-    'task_id': None,
-    'local_file_path': None,
-    'is_md_read_enabled': False,
-    'is_pdf_read_enabled': False,
-    'file_title': None,
-    'pdf_path': None,
-    'local_dir': None,
-    'md_path': None,
-    'md_content': None,
-    'chunks': None,
-    'item_name': None,
-    'embedding_content':None,
+    "task_id": None,
+    "local_dir": None,
+    "local_file_path": None,
+    "is_md_read_enabled": False,
+    "is_pdf_read_enabled": False,
+    "file_title": None,
+    "pdf_path": None,
+    "md_path": None,
+    "md_content": None,
+    "document_metadata": None,
+    "document_id": None,
+    "document_type": None,
+    "chunks": None,
 }
 
-#**overrides:可变关键字传参  自动将多个键值对转成字典
-def create_default_state(**overrides) -> ImportGraphState:
+
+def create_default_state(**overrides: Any) -> ImportGraphState:
+    """创建互不共享可变字段的默认导入状态。
+
+    核心功能：为 API 和本地测试提供统一状态初始化入口。
+    输入：需要覆盖或补充的状态键值。
+    输出：深拷贝后的新 ``ImportGraphState``。
+    步骤：复制默认状态，再用调用方参数覆盖对应字段。
     """
-    创建默认状态，支持覆盖。
-    :param overrides:
-    :return:
-    """
-    new_state = copy.deepcopy(graph_default_state)
-    #update():直接原位修改，有就修改，没有key就新增。
-    new_state.update(overrides)  #原地修改 无返回值
-    return new_state
+    state = copy.deepcopy(graph_default_state)
+    state.update(overrides)
+    return state
 
 
 def get_default_state() -> ImportGraphState:
-    """
-    返回一个新的状态实例，避免全局污染
-    :return:
-    """
+    """返回新的默认状态副本，避免跨请求污染。"""
     return copy.deepcopy(graph_default_state)
-
-
-if __name__ == '__main__':
-    state = create_default_state(task_id=str(uuid.uuid4()),local_file_path = "**")
-    #字典转json输出，不用挤在一行，每个key一行。
-    logger.info(json.dumps(state, indent=2,ensure_ascii=False))
-

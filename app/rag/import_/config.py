@@ -1,37 +1,57 @@
-# MinerU 模型版本配置（vlm = 视觉语言模型，适合PDF/图片高精度解析）
-MINERU_MODEL_VERSION = "vlm"
-# MinerU 任务轮询最大超时时间（单位：秒），超过则判定任务失败
-# 600 -> 一个pdf 约等于 1秒
-MINERU_POLL_TIMEOUT_SECONDS = 600
-# MinerU 任务轮询间隔时间（单位：秒），每隔多久查询一次任务状态
-MINERU_POLL_INTERVAL_SECONDS = 3
-# MinerU 文件下载超时时间（单位：秒），下载文件超过此时长则中断
-MINERU_DOWNLOAD_TIMEOUT_SECONDS = 30
+"""导入流程的集中配置常量。"""
 
-#定义local_dir对应输出的常来那个
+# MinerU PDF 解析配置。
+MINERU_MODEL_VERSION = "vlm"
+MINERU_POLL_TIMEOUT_SECONDS = 600
+MINERU_POLL_INTERVAL_SECONDS = 3
+MINERU_DOWNLOAD_TIMEOUT_SECONDS = 30
 PDF_PARSE_SERVICE_LOCAL_DIR = "output"
 
-#图片后缀
+# Markdown 图片处理配置。
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 
-#文本切块最大长度：单个文本块最多包含1000个
+# 文本切块配置，单位均为字符数。
 CHUNK_MAX_SIZE = 1000
-#文本切块基准长度：单个文本块理想长度
 CHUNK_SIZE = 600
-#文本块重叠长度：相邻块之间重叠20字符
-CHUNK_OVERLAP = int(CHUNK_SIZE*0.05)
-#最小碎片阈值：低于这个长度判定为短碎片，需要缝合
+CHUNK_OVERLAP = int(CHUNK_SIZE * 0.05)
 CHUNK_MIN = 300
+TABLE_MAX_SIZE = CHUNK_MAX_SIZE
+CODE_MAX_SIZE = CHUNK_MAX_SIZE
+CHUNK_BACKUP_ENABLED = True
 
-#相邻块数量阈值
-ITEM_NAME_CONTEXT_CHUNK_K = 5
-#总字符数硬上限
-ITEM_NAME_CONTEXT_TOTAL_MAX_CHARS = 10000
+# 文档 metadata 只使用正文前 10000 个字符。
+METADATA_CONTEXT_MAX_CHARS = 10000
+METADATA_LLM_RETRY = 1
+REGION_NAMES_MAX_COUNT = 8
+TOPICS_MAX_COUNT = 5
+KEYWORDS_MAX_COUNT = 10
+METADATA_ITEM_MAX_LENGTH = 128
 
+# Milvus 字段和批处理配置。
 MILVUS_DEFAULT_VARCHAR_MAX_LENGTH = 512
-
 MILVUS_CHUNK_CONTENT_MAX_LENGTH = 65535
-
 MILVUS_VECTOR_DIM = 1024
+MILVUS_ARRAY_ITEM_MAX_LENGTH = 128
+MILVUS_WRITE_BATCH_SIZE = 100
 
+# Embedding 批处理配置。
 EMBEDDING_BATCH_SIZE = 5
+
+
+def validate_import_config() -> None:
+    """校验导入核心参数之间的约束。
+
+    核心功能：在模块加载或测试时尽早发现无法工作的切块配置。
+    输入：无，读取本模块常量。
+    输出：无；配置非法时抛出 ``ValueError``。
+    步骤：校验 overlap、最小长度、目标长度和最大长度的递增关系。
+    """
+    if not 0 <= CHUNK_OVERLAP < CHUNK_MIN <= CHUNK_SIZE <= CHUNK_MAX_SIZE:
+        raise ValueError("切块参数必须满足 0 <= overlap < min <= size <= max")
+    if METADATA_CONTEXT_MAX_CHARS <= 0:
+        raise ValueError("METADATA_CONTEXT_MAX_CHARS 必须大于 0")
+    if EMBEDDING_BATCH_SIZE <= 0 or MILVUS_WRITE_BATCH_SIZE <= 0:
+        raise ValueError("批处理大小必须大于 0")
+
+
+validate_import_config()

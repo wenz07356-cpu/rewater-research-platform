@@ -21,7 +21,7 @@ from fastapi import BackgroundTasks, FastAPI, File, UploadFile
 from starlette.middleware.cors import CORSMiddleware
 
 from app.api.schemas.import_ import ImportStatusResponse, UploadResponse
-from app.shared.runtime.logger import PROJECT_ROOT, logger
+from app.shared.runtime.logger import PROJECT_ROOT, DATA_DIR,logger
 from app.process.import_.agent.main_graph import import_app
 from app.process.import_.agent.state import get_default_state
 from app.infra.config import settings
@@ -141,7 +141,7 @@ async def upload_files(
     """
     # 1. 构建本地存储根目录：项目根目录/output/YYYYMMDD（按日期分层，方便管理）
     today_str = datetime.now().strftime("%Y%m%d")
-    date_based_root_dir: Path = PROJECT_ROOT / "output" / today_str
+    date_based_root_dir: Path = DATA_DIR / "output" / today_str
 
     # 初始化任务ID列表，用于返回给前端（一个文件对应一个TaskID）
     task_ids = []

@@ -1,81 +1,75 @@
-"""
-应用主包 / 查询流程兼容层 / 图编排子模块 / 节点适配层中的 node_rerank 模块，负责承载对应场景的具体实现逻辑。
-"""
-import sys
+"""精排节点适配层。"""
+
 from app.rag.query.rerank_service import rerank_documents
-from app.shared.runtime.logger import logger
+from app.shared.runtime.logger import node_log
 from app.shared.utils.task_utils import add_done_task, add_running_task
 
-def node_rerank(state):
-    """
-    节点功能：使用 Cross-Encoder 模型对 RRF 后的结果进行精确打分重排。
-    """
-    # 重排阶段通常是最终答案前的最后一次候选筛选，因此单独记录进度。
-    add_running_task(state["session_id"], sys._getframe().f_code.co_name, state.get("is_stream"))
-    state["reranked_docs"] = rerank_documents(state)
-    add_done_task(state['session_id'], sys._getframe().f_code.co_name, state.get("is_stream"))
-    return state
+
+@node_log("node_rerank")
+def node_rerank(state: dict) -> dict:
+    """调用 Reranker service 并返回 reranked_docs 状态增量。"""
+    session_id = state["session_id"]
+    is_stream = state.get("is_stream", False)
+    add_running_task(session_id, "node_rerank", is_stream)
+    result = rerank_documents(state)
+    if not isinstance(result.get("reranked_docs"), list):
+        raise TypeError("reranked_docs 必须为列表")
+    add_done_task(session_id, "node_rerank", is_stream)
+    return result
 
 
 if __name__ == "__main__":
-    print("\n" + "=" * 50)
-    print(">>> 启动 node_rerank 本地测试")
-    print("=" * 50)
-
-
-
-    # for index in range(1,5):
-    #     print(index)
-
-    # 1. 模拟数据
-    # 1.1 RRF 本地文档数据
-    # todo: 注意
-    mock_rrf_chunks = [
-        {"chunk_id": "local_1", "content": "RRF是一种倒数排名融合算法", "title": "算法介绍"},
-        {"chunk_id": "local_2", "content": "BGE是一个强大的重排序模型", "title": "模型介绍"},
-        {"chunk_id": "local_3", "content": "无关的测试文档内容", "title": "测试文档"}  # 预期低分
-    ]
-
-    # 1.2 MCP 联网搜索数据
-    mock_web_docs = [
-        {"title": "Rerank技术详解", "url": "http://web.com/1", "snippet": "Rerank即重排序，常用于RAG系统的第二阶段"},
-        {"title": "无关网页", "url": "http://web.com/2", "snippet": "今天天气不错，适合出去游玩"}  # 预期低分
-    ]
-
-    mock_state = {
-        "session_id": "test_rerank_session",
-        "rewritten_query": "什么是RRF和Rerank？",  # 查询意图：想了解这两个算法
-        "rrf_chunks": mock_rrf_chunks,
-        "web_search_docs": mock_web_docs,
-        "is_stream": False
+    test_state = {
+        "session_id": "debug-rerank",
+        "is_stream": False,
+        "rewritten_query": "深圳市再生水现状",
+        "query_filters": {
+            "file_titles": [],
+            "region_names": ["深圳市"],
+            "document_types": [],
+            "topics": ["再生水现状"],
+            "keywords": ["再生水"],
+            "hard_fields": [],
+            "strict": False,
+        },
+        "rrf_chunks": [
+            {
+                "chunk_id": "debug-chunk-1",
+                "file_title": "深圳市再生水利用示例资料",
+                "section_title": "发展现状",
+                "display_title": "深圳市再生水利用示例资料 / 发展现状",
+                "content": "深圳市持续推进再生水设施建设和利用。",
+                "context_type": "text",
+                "region_names": ["深圳市"],
+                "document_type": "规划",
+                "topics": ["再生水利用"],
+                "keywords": ["设施建设"],
+                "score": 0.03,
+                "source": "milvus",
+                "retrieval_sources": ["embedding", "hyde"],
+                "url": "",
+            }
+        ],
+        "web_search_docs": [
+            {
+                "chunk_id": None,
+                "document_id": None,
+                "chunk_index": None,
+                "file_title": None,
+                "section_title": None,
+                "display_title": "深圳市再生水利用情况持续提升",
+                "content": "深圳市正在扩大再生水应用场景，并持续完善相关设施。",
+                "context_type": "text",
+                "region_names": [],
+                "document_type": None,
+                "topics": [],
+                "keywords": [],
+                "score": 0.0,
+                "source": "web",
+                "retrieval_source": "web",
+                "url": "https://example.com/shenzhen-reclaimed-water",
+            }
+        ],
     }
-
-    try:
-        # 运行节点
-        result = node_rerank(mock_state)
-        reranked = result.get("reranked_docs", [])
-
-        print("\n" + "=" * 50)
-        print(">>> 测试结果摘要:")
-        print(f"输入文档总数: {len(mock_rrf_chunks) + len(mock_web_docs)}")
-        print(f"输出文档总数: {len(reranked)}")
-        print("-" * 30)
-
-        print("最终排名:")
-        for i, doc in enumerate(reranked, 1):
-            print(f"Rank {i}: Source={doc.get('source')}, Score={doc.get('score'):.4f}, Text={doc.get('text')[:20]}...")
-
-        # 验证逻辑：
-        # 预期 "local_1", "local_2", "Rerank技术详解" 分数较高
-        # 预期 "local_3", "无关网页" 分数较低，可能被截断或排在最后
-
-        top1_score = reranked[0].get("score")
-        if top1_score > 0:
-            print("\n[PASS] Rerank 打分正常")
-        else:
-            print("\n[FAIL] Rerank 打分异常 (均为0或负数)")
-
-        print("=" * 50)
-
-    except Exception as e:
-        logger.exception(f"测试运行期间发生未捕获异常: {e}")
+    result_state = node_rerank(test_state)
+    print(result_state)

@@ -1,295 +1,294 @@
-import time
+"""查询理解服务：问题改写、范围抽取、澄清判断和用户历史保存。"""
+
+import re
+from typing import Any
 
 from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import JsonOutputParser
 
+from app.infra.llm.providers import llm_provider
+from app.infra.persistence.history_repository import history_repository
 from app.process.query.agent.state import QueryGraphState
+from app.rag.query.config import (
+    DOCUMENT_TYPES,
+    HARD_FILTER_FIELDS,
+    ORIGINAL_QUERY_MAX_CHARS,
+    QUERY_FILTER_MAX_VALUES,
+    QUERY_HISTORY_MAX_CHARS,
+    QUERY_HISTORY_MESSAGE_LIMIT,
+    REWRITTEN_QUERY_MAX_CHARS,
+    default_query_filters,
+)
 from app.shared.runtime.load_prompt import load_prompt
 from app.shared.runtime.logger import logger, step_log
-from app.infra.persistence.history_repository import history_repository
-from app.infra.llm.providers import llm_provider
-from app.infra.vector_store.milvus_gateway import milvus_gateway
 
-#   1.获取并且校验参数(state) -> session_id / original_query
-#         session_id,original_query = get_data_and_validates(state)
-#          获取数据
-#          非空校验
-#          返回结果
-#       2.获取(有效的)历史聊天记录,并且拼接成history_text提示词
-#          get_history_messages_and_context(session_id) -> history_text
-#          获取mongodbclient
-#          根据session_id获取最近聊天录(10)
-#          列表推导式推到有效的messages [item_names]
-#          将有效的messages拼接成history_text
-#             {id session_id  序号:1 / 2    role [提问还是回答] text [user ->原始问题 -> rewritten_query assistant -> 回答 -> text [:60]]
-#             rewritten_query item_names => [主体: x,x,x]  image_urls ts} -> item_name识别和问题重写
-#          return history_text
-#       3.调用模型识别item_names和rewritten_query -> json [item_names不一定准 大模型]
-#          dict = call_llm_item_name_and_rewritten(history_text,original_query)
-#          获取模型对象
-#          加载提示词字符串
-#          封装提示词对象
-#          包装chains -> StrOutput... JsonOutput ->
-#          dict = 执行练获取字典   面试题: 怎么确保大语言模型返回的数据是JSON格式!! 1. 提示词强调返回数据格式提供返回数据示例
-#                                                                          2. 模型的json模式设置
-#                                                                          3. 做好返回值的参数校验 JsonOutputParser ``` json  json dict
-#                                                                          4. 返回字典key的校验 item_names -> 无 -> []
-#                                                                                             rewritten_query -> 无 -> original_query
-#          return dict
-@step_log("get_data_and_validates")
-def get_data_and_validates(state:QueryGraphState) -> tuple[str,str]:
-    """
-    参数校验
-    :param state:
-    :return:
-    """
-    # 1. 获取数据
-    session_id = state.get("session_id")
-    original_query = state.get("original_query")
-    # 2. 进行数据校验
-    if not session_id or not original_query:
-        logger.error(f"session_id或者original_query未空,业务无法继续进行,提前终止!")
-        raise ValueError(f"session_id或者original_query未空,业务无法继续进行,提前终止!")
-    # 3. 返回结果
-    return session_id,original_query
+_WHITESPACE_RE = re.compile(r"\s+")
 
-@step_log("get_history_messages_and_context")
-def get_history_messages_and_context(session_id:str) -> str:
-    """
-     获取近期有效的历史聊天记录并且拼接成上下文
-    :param session_id:
-    :return:
-    """
-    # 1.获取最近10条历史条件记录
-    message_list:list[dict] =  history_repository.list_recent(session_id=session_id,limit=10)
-    if not message_list or len(message_list) == 0:
-        logger.warning(f"当前会话:{session_id}没有历史对话记录!提前跳出,history_text为空!")
-        return "无对话记录!"
-    # 2.有聊天记录,需要做有效判断
-    final_message_list = [
-        item
-        for item in message_list if len(item.get("item_names",[])) > 0
-    ]
-    if not final_message_list or len(final_message_list) == 0:
-        logger.warning(f"当前会话:{session_id}没有有效的历史对话记录!提前跳出,history_text为空!")
-        return "无有效对话记录!"
-    # 3. 拼接history_text
-    #     {id session_id  序号:1 / 2    role [提问还是回答] text [user ->原始问题 -> rewritten_query assistant -> 回答 -> text [:60]]
-    # #             rewritten_query item_names => [主体: x,x,x]  image_urls ts} -> item_name识别和问题重写
-    history_text = ""
-    for index, item in  enumerate(final_message_list,start=1):
-        history_text += (f"序号:{index},{'提问:' if item.get('role') == 'user' else '回答:'}"
-                         f"{item.get('rewritten_query') if item.get('role') =='user' else item.get('text')[:50]},"
-                         f"关联主体: {','.join(item.get('item_names'))} \n")
-        #  序号:1,提问:重写的问题,关联主体:1,2,3,4
-        #  序号:2,回答:回答内容[:50],关联主体:1,2,3,4
-    return history_text
 
-@step_log("call_llm_item_name_and_rewritten")
-def call_llm_item_name_and_rewritten(history_text:str, original_query:str)->dict:
+@step_log("validate_query_input")
+def validate_query_input(state: QueryGraphState) -> tuple[str, str]:
+    """校验查询入口。
+
+    输入：包含 session_id 和 original_query 的查询状态。
+    输出：规范化后的 session_id、original_query。
+    步骤：检查类型和空值，清洗连续空白，并限制异常超长输入。
     """
-    调用模型进行识别
-    :param history_text:
-    :param original_query:
-    :return:
-    """
-    #1. 加载模型对象
-    json_llm_client = llm_provider.chat(json_mode=True)
-    #2. 加载提示词
-    # 提示词修改
-    # 提示词 1. history靠上! 影响了模型对规则读取 历史对话向下挪
-    #       2. 不是每次提问都是延续的! 上一次 烫金机  本次  苹果手机
-    history_prompt_text = load_prompt("rewritten_query_and_itemnames",query=original_query,history_text=history_text)
-    #3. 包装提示词对象
-    history_prompt_messages = [
-        HumanMessage(
-            content=history_prompt_text
+    session_id = str(state.get("session_id") or "").strip()
+    original_query = _WHITESPACE_RE.sub(
+        " ", str(state.get("original_query") or "")
+    ).strip()
+    if not session_id:
+        logger.error("查询入口缺少 session_id")
+        raise ValueError("session_id 不能为空")
+    if not original_query:
+        logger.error("查询入口缺少 original_query")
+        raise ValueError("original_query 不能为空")
+    if len(original_query) > ORIGINAL_QUERY_MAX_CHARS:
+        logger.error(
+            f"original_query 超过长度限制：length={len(original_query)}, "
+            f"limit={ORIGINAL_QUERY_MAX_CHARS}"
         )
-    ]
-    #4. 创建调用链
-    chains = json_llm_client | JsonOutputParser()
-    #5. 调用获取结果
-    result_dict = chains.invoke(history_prompt_messages)
-    #6. 参数校验赋予默认值
-    if "item_names" not in result_dict:
-        result_dict["item_names"] = []
-    if "rewritten_query" not in result_dict:
-        result_dict["rewritten_query"] = original_query
-    #7. 返回结果
-    return result_dict
-
-@step_log("search_by_item_names")
-def search_by_item_names(item_names:list[str]) -> dict[str,list[dict]]:
-    """
-       进行向量数据库搜索
-    :param item_names:
-    :return:
-    """
-    # 准备一个最终的字典
-    final_result = {}
-    # 1.循环llm查询到item_names的列表 -> item_name
-    # item_names_vector = {dense:[[],[]],sparse:[{},{}]}
-    # 先批量生成向量!
-    item_names_vector = llm_provider.embed_documents(item_names)
-    for index in range(0,len(item_names)):
-        # 2.获取稠密和稀疏向量
-        item_name = item_names[index]
-        item_name_dense = item_names_vector['dense'][index]
-        item_name_sparse = item_names_vector['sparse'][index]
-        # 3.稀疏和稠密向量进行混合检索
-        # 3.1 创建annSearchRequest -> 2 -> []
-        reqs = milvus_gateway.create_requests(item_name_dense,item_name_sparse,limit=5*2)
-        # 3.2 创建WeightReranker排序器
-        # 3.3 进行混合检索
-        #  稠密 满分 1
-        #  稀疏 满分 0.6
-        #  0.5 0.5  = 0.75 - 0.8      0.73 -> 0.7   0.78  0.75
-        results=  milvus_gateway.hybrid_search(
-            collection_name=milvus_gateway.item_name_collection,
-            reqs=reqs, # [1,2]
-            ranker_weights=(0.5,0.5),
-            norm_score=True,
-            output_fields=['item_name']
+        raise ValueError(
+            f"original_query 不能超过 {ORIGINAL_QUERY_MAX_CHARS} 个字符"
         )
-        # results = [[{id:主键,distance:0.9,entity:{item_name:具体的name}},{id:主键,distance:0.9,entity:{item_name:具体的name}},{id:主键,distance:0.9,entity:{item_name:具体的name}}]]  保证对称性 单列检索和混合检索的返回结果一致
-        # 4.处理混合检索的结果
-        item_name_milvus_list =[]
-        if len(results[0]) > 0 :
-            for item in results[0]:
-                # {id:主键,distance:0.9,entity:{item_name:具体的name}}
-                item_name_milvus_list.append({
-                    "item_name":item.get('entity').get('item_name') ,"score":item.get('distance')
-                })
-            # {item_name:分,item_name:分...5个}
-        # 5.循环完以后得结果最终返回即可
-        final_result[item_name] = item_name_milvus_list
-    return final_result
+    return session_id, original_query
 
-@step_log("select_item_names")
-def select_item_names(milvus_result:dict[str,list[dict]]) -> dict[str,list]:
+
+@step_log("load_recent_query_history")
+def load_recent_history(session_id: str) -> list[dict[str, Any]]:
+    """读取近期历史。
+
+    输入：会话 ID。
+    输出：按时间正序排列的消息列表。
+    步骤：读取最近消息并反转 MongoDB 的倒序结果；不按 item_names 过滤。
     """
-      根据分数,明确确定和可选的item_name列表
-    :param milvus_result:
-    :return:
+    messages = history_repository.list_recent(
+        session_id=session_id,
+        limit=QUERY_HISTORY_MESSAGE_LIMIT,
+    )
+    if not messages:
+        logger.info(f"会话无历史记录：session_id={session_id}")
+        return []
+    return list(reversed(messages))
+
+
+def build_history_context(messages: list[dict[str, Any]]) -> str:
+    """构造受长度控制的历史上下文。
+
+    输入：按时间正序的历史消息。
+    输出：仅用于指代消解的文本。
+    步骤：格式化角色、问题摘要和查询范围，从最近内容向前截取。
     """
-    confirmed_list = []
-    option_list = []
+    if not messages:
+        return "无历史对话"
 
-    # 思路: item_name -> [{item_name:"向量数据库中的item_name",score:0.8},{item_name:"向量数据库中的item_name",score:0.8},{item_name:"向量数据库中的item_name",score:0.8}]
-    # 循环处理
-    for item_name, mivlus_result_list_dict  in  milvus_result.items():
-        # mivlus_result_list_dict = [{item_name:"向量数据库中的item_name",score:0.9 }, 0.85 0.8 ..]
-        # 苹果手机和华为手机哪个好用?
-        # 苹果手机 : [{},{},{},{},{},{}]  确认 -> 条件筛选 -> 确认1个 -> 分最高的  可选 -> 可能是.. 0.8 - 0.6 都要 topk 2
-        # 华为手机 : [{},{},{},{},{},{}]  确认 -> 条件筛选 -> 确认1个 -> 分最高的  可选 -> 可能是.. 0.8 - 0.6 都要 topk 2
-        # [{item_name:"向量数据库中的item_name",score:0.8},..] 数据是已经排好顺序的! 分高 前面!
-        # confirmed_list = [] -> 啥样的算确认  [ 稠密向量满分 1 * 0.5 + 稀疏向量满分 0.75  0.5 ] = 0.5 + 0.375 = 0.875 -> 0.8 + 确认
-        # option_list = [] -> 算可选的 -> 0.6 - 0.8 -> 可选
-        high_score_list = [ item for item in mivlus_result_list_dict if item.get("score",0) >= 0.70]
-        md_score_list = [ item for item in mivlus_result_list_dict if 0.6 <= item.get("score",0) < 0.70]
+    lines: list[str] = []
+    for message in messages:
+        role = "用户" if message.get("role") == "user" else "助手"
+        if role == "用户":
+            text = message.get("rewritten_query") or message.get("text") or ""
+        else:
+            text = str(message.get("text") or "")[:300]
+        filters = message.get("query_filters") or {}
+        legacy_titles = message.get("item_names") or []
+        suffix = ""
+        if filters:
+            suffix = f"；查询范围={filters}"
+        elif legacy_titles:
+            suffix = f"；旧版文件标题线索={legacy_titles}"
+        lines.append(f"{role}：{str(text).strip()}{suffix}")
 
-        if len(high_score_list) > 0:
-            confirmed_list.append(high_score_list[0])
-            logger.info(f"模型识别item_name:{item_name},有对应向量数据库中确认的item_name:{high_score_list[0].get('item_name')}")
-            continue
+    selected: list[str] = []
+    length = 0
+    for line in reversed(lines):
+        if length + len(line) > QUERY_HISTORY_MAX_CHARS:
+            break
+        selected.append(line)
+        length += len(line)
+    return "\n".join(reversed(selected)) or "无历史对话"
 
-        if len(md_score_list) > 0:
-            option_list.extend(md_score_list[:2])
-            logger.info(
-                f"模型识别item_name:{item_name},没有对应向量数据库中确认的item_name,"
-                f"但是有可选的:{','.join([ item.get('item_name') for item in md_score_list[:2]])}")
-            continue
+
+@step_log("call_llm_query_understanding")
+def call_llm_query_understanding(
+    original_query: str,
+    history_text: str,
+) -> dict[str, Any]:
+    """调用 JSON 模式大模型理解查询。
+
+    输入：当前问题、历史上下文。
+    输出：模型生成的原始字典。
+    步骤：渲染查询理解 Prompt，调用模型，并严格解析 JSON。
+    """
+    prompt = load_prompt(
+        "query_understanding",
+        query=original_query,
+        history_text=history_text,
+    )
+    chain = llm_provider.chat(json_mode=True) | JsonOutputParser()
+    result = chain.invoke([HumanMessage(content=prompt)])
+    if not isinstance(result, dict):
+        raise ValueError("查询理解模型返回值必须为 JSON 对象")
+    return result
+
+
+def _unique_strings(value: Any) -> list[str]:
+    """将模型字段规范化为有序、去重、限长的字符串列表。"""
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = _WHITESPACE_RE.sub(" ", str(item or "")).strip()
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= QUERY_FILTER_MAX_VALUES:
+            break
+    return result
+
+
+def normalize_query_understanding(
+    raw_result: dict[str, Any],
+    original_query: str,
+) -> dict[str, Any]:
+    """规范化查询理解结果。
+
+    输入：模型原始结果和原问题。
+    输出：可信 rewritten_query、query_filters 和澄清字段。
+    步骤：清洗列表和枚举，限制硬过滤资格，并校验澄清状态。
+    """
+    rewritten_query = _WHITESPACE_RE.sub(
+        " ", str(raw_result.get("rewritten_query") or original_query)
+    ).strip()
+    if len(rewritten_query) > REWRITTEN_QUERY_MAX_CHARS:
+        logger.warning(
+            "查询改写超过长度限制，优先回退原问题并按边界限制长度："
+            f"length={len(rewritten_query)}"
+        )
+        rewritten_query = original_query[:REWRITTEN_QUERY_MAX_CHARS].rstrip()
+
+    filters = default_query_filters()
+    for field in (
+        "file_titles",
+        "region_names",
+        "document_types",
+        "topics",
+        "keywords",
+    ):
+        filters[field] = _unique_strings(raw_result.get(field))
+    filters["document_types"] = [
+        item for item in filters["document_types"] if item in DOCUMENT_TYPES
+    ]
+    filters["strict"] = bool(raw_result.get("strict", False))
+
+    requested_hard = _unique_strings(raw_result.get("hard_fields"))
+    hard_fields = [
+        field for field in requested_hard if field in HARD_FILTER_FIELDS
+    ]
+    # 文件标题没有独立权威目录可校验，只有排他提问且标题原文可见时才硬过滤。
+    if "file_titles" in hard_fields and not (
+        filters["strict"]
+        and any(title in original_query for title in filters["file_titles"])
+    ):
+        hard_fields.remove("file_titles")
+        logger.warning("file_titles 不满足严格精确条件，已降级为软检索条件")
+    filters["hard_fields"] = hard_fields
+
+    needs_clarification = bool(raw_result.get("needs_clarification", False))
+    clarification = str(raw_result.get("clarification_question") or "").strip()
+    if needs_clarification and not clarification:
+        clarification = "当前问题中的指代或限定范围不明确，请补充具体问题。"
+    if not needs_clarification:
+        clarification = ""
 
     return {
-        "confirmed_list":confirmed_list,
-        "option_list":option_list
+        "rewritten_query": rewritten_query,
+        "query_filters": filters,
+        "needs_clarification": needs_clarification,
+        "clarification_question": clarification,
     }
 
-@step_log("apply_item_name_result")
-def apply_item_name_result(state, list_dict:dict[str,list], rewritten_query:str):
+
+def apply_query_understanding(
+    state: QueryGraphState,
+    result: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """生成查询理解节点的状态增量。"""
+    return {
+        "rewritten_query": result["rewritten_query"],
+        "query_filters": result["query_filters"],
+        "history": history,
+        "answer": (
+            result["clarification_question"]
+            if result["needs_clarification"]
+            else ""
+        ),
+    }
+
+
+def save_user_query_history(
+    state: QueryGraphState,
+    state_update: dict[str, Any],
+) -> None:
+    """保存用户问题；历史存储失败不阻断本轮查询。"""
+    try:
+        history_repository.save_message(
+            session_id=state["session_id"],
+            role="user",
+            text=state["original_query"],
+            rewritten_query=state_update["rewritten_query"],
+            query_filters=state_update["query_filters"],
+            item_names=[],
+            image_urls=[],
+        )
+    except Exception as exc:
+        logger.exception(
+            f"用户查询历史保存失败，将继续本轮查询：error={exc}"
+        )
+
+
+@step_log("understand_query")
+def understand_query(state: QueryGraphState) -> dict[str, Any]:
+    """编排查询理解流程。
+
+    输入：查询图状态。
+    输出：rewritten_query、query_filters、history、answer 状态增量。
+    步骤：校验、读取历史、LLM 理解、规范化、保存历史。
     """
-      本次就是为了state
-         confirmed_list ->  有数据
-           item_names = []
-           rewritten_query = ""
-           一定不能给 answer del ...
-           return
-         option_list ->confirmed_list没有,  有数据
-           item_names 不赋值
-           rewritten_query 也无需赋值
-           answer = 本次问题没有识别到关联的主体,可能是: 1,2,3,4 请您确认和选择!
-           return
-         confirmed_list,option_list -> 都没有数据
-           item_names 不赋值
-           rewritten_query 也无需赋值
-           answer = 本次问题没有关联到任何主体,有没有相似可选的主体! 请您明确主体再提问!
-           return
-    :param state:
-    :param list_dict:
-    :param rewritten_query:
-    :return:
-    """
-    # [{item_name:xx,score:xxx},]
-    confirmed_list = list_dict.get("confirmed_list",[])
-    option_list = list_dict.get("option_list",[])
-
-    if len(confirmed_list) > 0:
-        state['item_names'] = [item.get('item_name') for item in confirmed_list ]
-        state['rewritten_query'] = rewritten_query
-        if "answer" in state:
-            state["answer"] = None
-        return
-
-    if len(option_list) >0:
-        # 没有确认,但是有可选的
-        # option_list = [[],[]]
-        state["answer"] = f"本次提问没有确认主体,但是有相似可选的: {','.join([item.get('item_name') for item in option_list ])},请您再次确认!"
-        return
-
-    state['answer'] = "本次问题没有关联到任何主体,有没有相似可选的主体! 请您明确主体再提问!"
-
-@step_log("save_history_message")
-def save_history_message(state:QueryGraphState):
-    history_repository.save_message(
-        session_id=state.get("session_id"),
-        role="user",  # 用户提问
-        text=state.get("original_query"),
-        rewritten_query=state.get("rewritten_query",""),
-        item_names=state.get("item_names",[]),
-        image_urls=[]
+    session_id, original_query = validate_query_input(state)
+    history = (
+        []
+        if state.get("eval_disable_history")
+        else load_recent_history(session_id)
     )
+    history_text = build_history_context(history)
+    try:
+        raw_result = call_llm_query_understanding(
+            original_query, history_text
+        )
+        result = normalize_query_understanding(raw_result, original_query)
+    except Exception as exc:
+        logger.exception(
+            "查询理解模型失败，回退为原问题全库检索："
+            f"error={exc}"
+        )
+        result = {
+            "rewritten_query": original_query[:REWRITTEN_QUERY_MAX_CHARS],
+            "query_filters": default_query_filters(),
+            "needs_clarification": False,
+            "clarification_question": "",
+        }
+    update = apply_query_understanding(state, result, history)
+    if not state.get("eval_disable_history"):
+        save_user_query_history(state, update)
+    logger.info(
+        "查询理解完成："
+        f"session_id={session_id}, rewritten_length="
+        f"{len(update['rewritten_query'])}, hard_fields="
+        f"{update['query_filters']['hard_fields']}, "
+        f"needs_clarification={bool(update['answer'])}"
+    )
+    return update
 
-@step_log("confirm_item_name")
-def confirm_item_name(state: QueryGraphState) -> QueryGraphState:
-    """
-    意图确认服务：
-    1. 结合历史对话提取商品名
-    2. 将模糊问题改写为完整独立的精准问题
-    3. 在 Milvus 向量库中进行混合搜索
-    4. 根据评分高低自动对齐标准型号，或生成反问让用户手动确认
-    5. 同步历史记录到 MongoDB  HAK 180 烫金机
-    """
-    # 1
-    session_id, original_query = get_data_and_validates(state)
-    # 2 获取历史(有效)信息和拼接上下文
-    history_text = get_history_messages_and_context(session_id)
-    # 3. 调用模型识别item_names和重写的问题
-    result:dict =call_llm_item_name_and_rewritten(history_text,original_query)
-    list_dict = {}
-    if len(result.get("item_names",[])) > 0:
-        # 4. 进行向量数据库的搜索 llm - 分析 -> item_names -> milvus中进行查询 -> 打分
-        # [1 -> 关联item_name,2 -> item_name,3 ...,4]
-        milvus_result:dict[str,list[dict]] = search_by_item_names(result.get("item_names",[]))
-        # 5. 根据打分确定两个列表 确认列表 可选列表
-        # 确认列表
-        # 可选列表
-        # dict{"confirmed_list":[],option_list:[]}
-        #   "confirmed_list":confirmed_list,
-        #   "option_list":option_list
-        list_dict:dict[str,list] =select_item_names(milvus_result)
-    #6. 确定和可选列表修改state answer item_names rewritten_query
-    # 修改 state answer item_names rewritten_query list_dict
-    apply_item_name_result(state,list_dict,result.get("rewritten_query"))
-    #7. 记录提问的聊天记录
-    save_history_message(state)
-    return state
+
+# 旧节点调用方兼容；新版业务统一使用 understand_query。
+confirm_item_name = understand_query

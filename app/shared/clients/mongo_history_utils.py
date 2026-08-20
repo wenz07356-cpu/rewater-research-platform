@@ -108,6 +108,7 @@ def save_chat_message(
         text: str,
         rewritten_query: str = "",
         item_names: list[str] | None = None,
+        query_filters: dict[str, Any] | None = None,
         image_urls: list[str] | None = None,
         message_id: str | None = None
 ) -> str:
@@ -119,6 +120,7 @@ def save_chat_message(
     :param text: 对话核心内容，用户的提问或助手的回答
     :param rewritten_query: 重写后的查询语句（可选，用于检索增强等场景，默认空字符串）
     :param item_names: 关联的商品名称列表（可选，支持多商品，默认None）
+    :param query_filters: 新版查询范围（可选，用于后续指代消解）
     :param image_urls: 关联的图片URL列表（可选，默认None）
     :param message_id: 记录主键ID（可选，有值则更新，无值则新增）
     :return: 插入/更新的记录唯一标识（新增返回ObjectId字符串，更新返回传入的message_id）
@@ -132,7 +134,8 @@ def save_chat_message(
         "role": role,  # 消息角色
         "text": text,  # 消息内容
         "rewritten_query": rewritten_query or "",  # 重写查询，空值处理为空字符串
-        "item_names": item_names,  # 关联商品名称列表
+        "item_names": item_names or [],  # 旧版兼容字段
+        "query_filters": query_filters or {},
         "image_urls": image_urls,  # 关联图片URL列表
         "ts": ts  # 时间戳，排序和时间筛选维度
     }

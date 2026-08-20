@@ -27,6 +27,7 @@ class HistoryItem(BaseModel):
     text: str = ""
     rewritten_query: str = ""
     item_names: list[str] = Field(default_factory=list)
+    query_filters: dict[str, Any] = Field(default_factory=dict)
     image_urls: list[str] = Field(default_factory=list)
     ts: Any = None
 

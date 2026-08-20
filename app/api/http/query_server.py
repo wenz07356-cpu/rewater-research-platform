@@ -180,6 +180,7 @@ def build_history_response(session_id: str, limit: int = 10) -> HistoryResponse:
             text=record.get("text", ""),
             rewritten_query=record.get("rewritten_query", ""),
             item_names=record.get("item_names", []),
+            query_filters=record.get("query_filters", {}),
             image_urls=record.get("image_urls", []),
             ts=record.get("ts"),
         )
@@ -251,7 +252,15 @@ def query_html():
         FileResponse: 本地聊天演示页面文件响应。
     """
     html_path = PROJECT_ROOT / "app" / "process" / "query" / "page" / "chat.html"
-    return FileResponse(path=html_path, media_type=guess_type(html_path.name)[0])
+    return FileResponse(
+        path=html_path,
+        media_type=guess_type(html_path.name)[0],
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/query", response_model=QueryResponse)

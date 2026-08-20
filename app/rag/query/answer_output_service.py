@@ -1,176 +1,288 @@
+"""查询链路统一答案出口。"""
+
 import re
+from typing import Any
+from urllib.parse import urlsplit
 
 from langchain_core.messages import HumanMessage
 
+from app.infra.llm.providers import llm_provider
 from app.infra.persistence.history_repository import history_repository
 from app.process.query.agent.state import QueryGraphState
-from app.rag.query.config import SUPPORTED_IMAGE_EXTENSIONS
+from app.rag.query.config import (
+    ANSWER_MAX_CONTEXT_CHARS,
+    QUERY_HISTORY_MAX_CHARS,
+    SUPPORTED_IMAGE_EXTENSIONS,
+)
+from app.rag.query.search_embedding_hyde_service import build_query_scope_text
+from app.rag.query.search_embedding_service import normalize_query_filters
 from app.shared.runtime.load_prompt import load_prompt
-from app.shared.utils.task_utils import push_to_session
-from app.shared.utils.sse_utils import SSEEvent
-from app.shared.runtime.logger import logger
-from app.infra.llm.providers import llm_provider
+from app.shared.runtime.logger import logger, step_log
+from app.shared.utils.sse_utils import SSEEvent, push_to_session
+from app.shared.utils.task_utils import set_task_result
 
-#   1. 判断state是否有answer,有我们直接返回(state) -> bool 有没有answer
-#            没有 ->  return false
-#            有   ->  流式   push_to_session(session_id,delta,{delta:answer })
-#                    非流式  return True state => answer
-#        2. 上一次返回的值是false
-#            3.  answer_prompt_text =  声明一个提示词拼接的方法(state) 拼接
-#            4.  调用模型处理字符串answer回答的问题(state,answer_prompt_text)
-#                 流式
-#                     llm - stream -> push ... -> state answer
-#                 非流式
-#                     llm - invoke -> state -> answer
-#                 state[answer] =
-#            5. 提取图片存储到state(reranked [text ![]()] mcp url -> 是不是图片, state)
-#                 url -> 后缀名
-#                 text -> 网络搜索 md ![xxxx](http://xxx) -> r"\!\[.*?\]\((.*?)\)"  findall
-#                 iamge_urls -> state
-#        6. 保存聊天记录 [回答]
-#        7. 返回state
-#        return state
-def state_exists_answer(state) -> bool:
-    # 1. 判断是否存在
-    answer = state.get("answer")
+_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+_LEGACY_SOURCE_RE = re.compile(r"\[来源(\d+)\]")
+
+
+def handle_prebuilt_answer(state: QueryGraphState) -> tuple[bool, str]:
+    """识别并推送查询理解阶段已生成的澄清回答。"""
+    answer = str(state.get("answer") or "").strip()
     if not answer:
-        # 没有
-        # item_name 确定,正常流程
-        logger.info(f"answer内容为空,业务正常进行查询的!跳入回答环节!")
-        return False
-    # 2. 存在 判定是不是流式
-    is_stream = state.get("is_stream",False)
-    if is_stream:
-        # 是流式 现在就要结果给推送队列中
-        push_to_session(state.get("session_id"),SSEEvent.DELTA,{"delta":answer})
-
-    logger.info(f"answer内容不为空,前期没有识别出item_name,提前给与回答!")
-    return True
+        return False, ""
+    if state.get("is_stream"):
+        push_to_session(
+            state["session_id"], SSEEvent.DELTA, {"delta": answer}
+        )
+    logger.info("使用查询理解阶段生成的澄清回答")
+    return True, answer
 
 
-def load_answer_prompt(state : QueryGraphState) -> str:
+def validate_answer_inputs(
+    state: QueryGraphState,
+) -> tuple[str, list[dict[str, Any]]]:
+    """校验答案生成问题和精排证据列表。"""
+    question = str(
+        state.get("rewritten_query") or state.get("original_query") or ""
+    ).strip()
+    documents = state.get("reranked_docs") or []
+    if not question:
+        raise ValueError("答案生成缺少查询问题")
+    if not isinstance(documents, list):
+        raise TypeError("reranked_docs 必须为列表")
+    return question, documents
+
+
+def build_source_label(document: dict[str, Any]) -> str:
+    """生成用户可直接理解的统一来源标签。
+
+    输入：一条本地或 Web 精排候选。
+    输出：本地为 ``[本地知识库/file_title/section_title]``，Web 为
+    ``[网络搜索/url]``。
+    步骤：先按 source 判断来源；本地缺少章节时回退到文件标题，Web 缺少
+    URL 时使用明确占位文本，避免重新退化为不可解释的数字编号。
     """
-      加载提示词! 用于模型润色answer回答
-    :param state:
-    :return:
+    if document.get("source") == "web":
+        url = str(document.get("url") or "未提供URL").strip()
+        return f"[网络搜索/{url}]"
+
+    file_title = str(
+        document.get("file_title") or "未命名文件"
+    ).strip()
+    section_title = str(
+        document.get("section_title") or file_title
+    ).strip()
+    return f"[本地知识库/{file_title}/{section_title}]"
+
+
+def build_evidence_context(reranked_docs: list[dict[str, Any]]) -> str:
+    """构造包含可读来源标签的答案证据。
+
+    输入：最终精排候选列表。
+    输出：供答案模型使用的多段证据文本。
+    步骤：逐条生成统一来源标签和 metadata，按完整候选控制总长度；不再
+    生成 ``[来源1]`` 一类需要二次查找的编号。
     """
-    # question
-    question = state.get("rewritten_query")
-    # context
-    # reranked_docs = [  { chunk_id , title , text , score = reranker模型 , type , url  }  ]
-    reranked_docs = state.get("reranked_docs",[])
-    context = ""
-    #  第1部分,标题:xx,来源:网络或者向量库,置信度: xxx,内容: text \n
-    for index,doc in enumerate(reranked_docs,start=1):
-        context += (f"第{index}部分,标题:{doc.get('title')},来源:{ '网络搜索' if doc.get('type') == 'web' else '向量库'} ,"
-                    f"置信度: {doc.get('score')},内容:{doc.get('text')}\n")
-    # item_names
-    item_names = f"{','.join(state.get('item_names',[]))}"
-    # history
-    history_text = ""
-    message_list =  history_repository.list_recent(state.get("session_id"),limit=6)
-    # 正确支撑 -> item_names明确
-    if not message_list or len(message_list) == 0:
-        logger.warning(f"当前会话:{state.get('session_id')}没有历史对话记录!提前跳出,history_text为空!")
-        history_text = "无对话记录!"
-    else:
-        final_message_list = [
-            item
-            for item in message_list if len(item.get("item_names", [])) > 0
-        ]
-        if not final_message_list or len(final_message_list) == 0:
-            logger.warning(f"当前会话:{state.get('session_id')}没有有效的历史对话记录!提前跳出,history_text为空!")
-            history_text =  "无有效对话记录!"
-        else:
-            for index, item in enumerate(final_message_list, start=1):
-                history_text += (f"序号:{index},{'提问:' if item.get('role') == 'user' else '回答:'}"
-                                 f"{item.get('rewritten_query') if item.get('role') == 'user' else item.get('text')[:50]},"
-                                 f"关联主体: {','.join(item.get('item_names'))} \n")
-    # 加载提示词
-    answer_out_str = load_prompt("answer_out",question=question,context=context,item_names=item_names,history=history_text)
-    return answer_out_str
+    sections: list[str] = []
+    length = 0
+    for document in reranked_docs:
+        source = "网络搜索" if document.get("source") == "web" else "本地知识库"
+        source_label = build_source_label(document)
+        metadata: list[str] = []
+        if document.get("source") != "web":
+            if document.get("document_type"):
+                metadata.append(f"文档类型：{document['document_type']}")
+            if document.get("region_names"):
+                metadata.append(
+                    f"地域：{'、'.join(document['region_names'])}"
+                )
+            if document.get("context_type"):
+                metadata.append(f"内容类型：{document['context_type']}")
+        elif document.get("url"):
+            metadata.append(f"URL：{document['url']}")
+        section = (
+            f"来源标识：{source_label}\n"
+            f"标题：{document.get('display_title') or '未命名来源'}\n"
+            f"来源：{source}\n"
+            f"{'；'.join(metadata)}\n"
+            f"内容：{document.get('content') or ''}"
+        ).strip()
+        if sections and length + len(section) > ANSWER_MAX_CONTEXT_CHARS:
+            logger.warning("答案证据达到上下文长度上限，停止追加低排名候选")
+            break
+        sections.append(section)
+        length += len(section)
+    return "\n\n".join(sections)
 
 
-def call_llm_deal_answer(state, answer_prompt_text):
+def replace_legacy_source_labels(
+    answer: str,
+    reranked_docs: list[dict[str, Any]],
+) -> str:
+    """把模型偶尔生成的旧数字来源转换为新版可读标签。
+
+    输入：模型答案和与 Prompt 顺序一致的精排候选。
+    输出：不含可解析旧 ``[来源N]`` 的答案。
+    步骤：按 N 的一基索引查找对应候选并替换；索引越界时保留原文本，
+    避免错误绑定到其他来源。
     """
-      处理answer
-    :param state:
-    :param answer_prompt_text:
-    :return:
-    """
-    is_stream = state.get("is_stream",False)
-    answer = ""
-    # 准备模型
-    llm_client = llm_provider.chat()
-    messages = [HumanMessage(
-            content=answer_prompt_text
-        )]
-    # 流式和非流式
-    if is_stream:
-        # 流式
-        stream = llm_client.stream(messages)
-        for chunk in stream:
-            # 增量数据 delta -> 队列中
-            push_to_session(state.get("session_id"),SSEEvent.DELTA,{"delta":chunk.content})
-            answer += chunk.content
-    else:
-        # 非流
-        response =  llm_client.invoke(messages) # AIMessage(content = 结果)
-        answer = response.content
-    state["answer"] = answer
+    def replace(match: re.Match[str]) -> str:
+        index = int(match.group(1)) - 1
+        if 0 <= index < len(reranked_docs):
+            return build_source_label(reranked_docs[index])
+        return match.group(0)
+
+    return _LEGACY_SOURCE_RE.sub(replace, answer)
 
 
-def extract_text_image_url(state):
-    """
-    处理图片
-       text
-       url
-    :param state:
-    :return:
-    """
-    # 获取reranked_docs  text url
-    reranked_docs = state.get("reranked_docs",[])
-    # 定义正则规则
-    image_re =  re.compile(r"\!\[.*?\]\((.*?)\)")  # findall
-    image_urls = []
-    # 循环出来每个doc url | text
-    for doc in reranked_docs:
-        url:str  = doc.get("url")
-        text:str = doc.get("text")
-        if url and url.endswith(SUPPORTED_IMAGE_EXTENSIONS):
-            image_urls.append(url)
-        url_list = image_re.findall(text)
-        if url_list and len(url_list) >0:
-            image_urls.extend(url_list)
-    # image_urls
-    state['image_urls'] = image_urls
+def build_answer_history_context(state: QueryGraphState) -> str:
+    """构造只用于指代和语气衔接的近期历史文本。"""
+    messages = state.get("history") or []
+    if not isinstance(messages, list) or not messages:
+        return "无历史对话"
+    lines: list[str] = []
+    for message in messages:
+        role = "用户" if message.get("role") == "user" else "助手"
+        text = (
+            message.get("rewritten_query")
+            if role == "用户"
+            else message.get("text")
+        ) or message.get("text") or ""
+        lines.append(f"{role}：{str(text)[:300]}")
+    result = "\n".join(lines)
+    return result[-QUERY_HISTORY_MAX_CHARS:]
 
 
-def save_answer_message_history(state):
-
-    history_repository.save_message(
-        session_id=state.get("session_id"),
-        role="assistant",
-        text=state.get("answer"),
-        rewritten_query=state.get("rewritten_query"),
-        item_names=state.get("item_names",[]),
-        image_urls=state.get("image_urls",[])
+def load_answer_prompt(
+    state: QueryGraphState,
+    evidence_context: str,
+    history_text: str,
+) -> str:
+    """使用问题、范围、证据和历史渲染最终答案 Prompt。"""
+    filters = normalize_query_filters(state.get("query_filters"))
+    return load_prompt(
+        "answer_out",
+        question=state.get("rewritten_query") or state.get("original_query"),
+        query_scope=build_query_scope_text(filters),
+        context=evidence_context,
+        history=history_text,
     )
 
 
-def generate_answer(state: QueryGraphState) -> QueryGraphState:
-    # 1. state中是否存在answer -> 可以返回字符串了
-    has_answer:bool = state_exists_answer(state)
-    # 2. 判断不存在...
+def generate_answer_by_llm(
+    state: QueryGraphState,
+    prompt_text: str,
+) -> str:
+    """按流式或非流式模式调用模型，并返回完整答案。"""
+    client = llm_provider.chat()
+    messages = [HumanMessage(content=prompt_text)]
+    answer = ""
+    if state.get("is_stream"):
+        for chunk in client.stream(messages):
+            delta = str(getattr(chunk, "content", "") or "")
+            if not delta:
+                continue
+            answer += delta
+            push_to_session(
+                state["session_id"], SSEEvent.DELTA, {"delta": delta}
+            )
+    else:
+        response = client.invoke(messages)
+        answer = str(getattr(response, "content", "") or "")
+    answer = answer.strip()
+    if not answer:
+        raise RuntimeError("答案模型返回空文本")
+    return answer
+
+
+def _is_image_url(url: str) -> bool:
+    """忽略 query/fragment 后判断 URL 路径是否为支持的图片格式。"""
+    try:
+        path = urlsplit(url).path.lower()
+    except ValueError:
+        path = url.lower()
+    return path.endswith(SUPPORTED_IMAGE_EXTENSIONS)
+
+
+def extract_image_urls(reranked_docs: list[dict[str, Any]]) -> list[str]:
+    """从最终证据正文和 Web 地址提取有序、去重的图片 URL。"""
+    result: list[str] = []
+    for document in reranked_docs:
+        candidates = _IMAGE_RE.findall(str(document.get("content") or ""))
+        url = str(document.get("url") or "").strip()
+        if url and _is_image_url(url):
+            candidates.append(url)
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if candidate and candidate not in result:
+                result.append(candidate)
+    return result
+
+
+def save_answer_history(
+    state: QueryGraphState,
+    answer: str,
+    image_urls: list[str],
+) -> None:
+    """保存助手消息；落库失败记录错误但不丢弃已生成答案。"""
+    try:
+        history_repository.save_message(
+            session_id=state["session_id"],
+            role="assistant",
+            text=answer,
+            rewritten_query=state.get("rewritten_query") or "",
+            query_filters=normalize_query_filters(
+                state.get("query_filters")
+            ),
+            item_names=[],
+            image_urls=image_urls,
+        )
+    except Exception as exc:
+        logger.exception(f"助手回答历史保存失败：error={exc}")
+
+
+@step_log("produce_answer")
+def produce_answer(state: QueryGraphState) -> dict[str, Any]:
+    """统一处理澄清、无结果和证据回答。
+
+    输入：查询图最终状态或入口澄清状态。
+    输出：answer、image_urls 和 prompt 状态增量。
+    步骤：优先使用固定回答；无证据固定兜底；有证据才调用模型。
+    """
+    has_answer, answer = handle_prebuilt_answer(state)
+    prompt_text = ""
+    documents: list[dict[str, Any]] = []
     if not has_answer:
-        # 没有answer 模型润色answer 提取image_urls
-        # answer_prompt_text =  声明一个提示词拼接的方法(state) 拼接
-        answer_prompt_text:str = load_answer_prompt(state)
-        # 调用llm模型处理answer字符串的问题
-        call_llm_deal_answer(state,answer_prompt_text)
-        # 使用正则或者图片url匹配获取image_urls
-        extract_text_image_url(state)
-    # 3.历史聊天记录记录
-    save_answer_message_history(state)
-    logger.info(f"终于写完了 2026年6月30日15:56:27")
-    return state
+        _, documents = validate_answer_inputs(state)
+        if not documents:
+            answer = "未检索到足以回答该问题的参考内容。"
+            if state.get("is_stream"):
+                push_to_session(
+                    state["session_id"],
+                    SSEEvent.DELTA,
+                    {"delta": answer},
+                )
+            logger.warning("所有检索候选为空，使用固定无结果回答")
+        else:
+            evidence = build_evidence_context(documents)
+            history = build_answer_history_context(state)
+            prompt_text = load_answer_prompt(state, evidence, history)
+            answer = generate_answer_by_llm(state, prompt_text)
+            answer = replace_legacy_source_labels(answer, documents)
+
+    image_urls = extract_image_urls(documents)
+    if not state.get("eval_disable_history"):
+        save_answer_history(state, answer, image_urls)
+    set_task_result(state["session_id"], "answer", answer)
+    logger.info(
+        f"答案输出完成：answer_length={len(answer)}, "
+        f"evidence_count={len(documents)}, images={len(image_urls)}"
+    )
+    return {
+        "answer": answer,
+        "image_urls": image_urls,
+        "prompt": prompt_text,
+    }
+
+
+generate_answer = produce_answer

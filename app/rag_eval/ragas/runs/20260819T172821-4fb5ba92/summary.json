@@ -1,0 +1,499 @@
+{
+  "run_id": "20260819T172821-4fb5ba92",
+  "started_at": "2026-08-19T09:28:21.487626+00:00",
+  "finished_at": "2026-08-19T09:29:30.342506+00:00",
+  "dataset": {
+    "path": "E:\\project\\rewater-agent\\app\\rag_eval\\ragas\\rag_gold_questions.csv",
+    "sha256": "b64e112d59dd2829dc6e56c36dfdf7567c295720f5bbc70b4c51897060885e58"
+  },
+  "filters": {
+    "split": "dev",
+    "review_statuses": [
+      "draft",
+      "reviewed"
+    ]
+  },
+  "sample_count": 2,
+  "success_count": 2,
+  "failure_count": 0,
+  "overall": {
+    "sample_count": 2,
+    "ragas": {
+      "faithfulness": {
+        "valid_count": 0,
+        "mean": null,
+        "median": null,
+        "p10": null
+      },
+      "answer_relevancy": {
+        "valid_count": 0,
+        "mean": null,
+        "median": null,
+        "p10": null
+      },
+      "context_precision": {
+        "valid_count": 0,
+        "mean": null,
+        "median": null,
+        "p10": null
+      },
+      "context_recall": {
+        "valid_count": 0,
+        "mean": null,
+        "median": null,
+        "p10": null
+      },
+      "answer_correctness": {
+        "valid_count": 0,
+        "mean": null,
+        "median": null,
+        "p10": null
+      }
+    },
+    "id_metrics": {
+      "embedding": {
+        "id_precision": {
+          "valid_count": 2,
+          "mean": 0.1,
+          "median": 0.1,
+          "p10": 0.1
+        },
+        "id_recall": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        },
+        "must_hit_rate": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        }
+      },
+      "hyde": {
+        "id_precision": {
+          "valid_count": 2,
+          "mean": 0.1,
+          "median": 0.1,
+          "p10": 0.1
+        },
+        "id_recall": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        },
+        "must_hit_rate": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        }
+      },
+      "rrf": {
+        "id_precision": {
+          "valid_count": 2,
+          "mean": 0.08333333333333333,
+          "median": 0.08333333333333333,
+          "p10": 0.08333333333333333
+        },
+        "id_recall": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        },
+        "must_hit_rate": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        }
+      },
+      "rerank": {
+        "id_precision": {
+          "valid_count": 2,
+          "mean": 0.35,
+          "median": 0.35,
+          "p10": 0.23
+        },
+        "id_recall": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        },
+        "must_hit_rate": {
+          "valid_count": 2,
+          "mean": 1.0,
+          "median": 1.0,
+          "p10": 1.0
+        }
+      }
+    }
+  },
+  "groups": {
+    "split:dev": {
+      "sample_count": 2,
+      "ragas": {
+        "faithfulness": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "answer_relevancy": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "context_precision": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "context_recall": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "answer_correctness": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        }
+      },
+      "id_metrics": {
+        "embedding": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.1,
+            "median": 0.1,
+            "p10": 0.1
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        },
+        "hyde": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.1,
+            "median": 0.1,
+            "p10": 0.1
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        },
+        "rrf": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.08333333333333333,
+            "median": 0.08333333333333333,
+            "p10": 0.08333333333333333
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        },
+        "rerank": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.35,
+            "median": 0.35,
+            "p10": 0.23
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        }
+      }
+    },
+    "answerable:true": {
+      "sample_count": 2,
+      "ragas": {
+        "faithfulness": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "answer_relevancy": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "context_precision": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "context_recall": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "answer_correctness": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        }
+      },
+      "id_metrics": {
+        "embedding": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.1,
+            "median": 0.1,
+            "p10": 0.1
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        },
+        "hyde": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.1,
+            "median": 0.1,
+            "p10": 0.1
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        },
+        "rrf": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.08333333333333333,
+            "median": 0.08333333333333333,
+            "p10": 0.08333333333333333
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        },
+        "rerank": {
+          "id_precision": {
+            "valid_count": 2,
+            "mean": 0.35,
+            "median": 0.35,
+            "p10": 0.23
+          },
+          "id_recall": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          },
+          "must_hit_rate": {
+            "valid_count": 2,
+            "mean": 1.0,
+            "median": 1.0,
+            "p10": 1.0
+          }
+        }
+      }
+    }
+  },
+  "multi_document": {
+    "sample_count": 0,
+    "success_count": 0,
+    "metrics": {
+      "sample_count": 0,
+      "ragas": {
+        "faithfulness": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "answer_relevancy": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "context_precision": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "context_recall": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "answer_correctness": {
+          "valid_count": 0,
+          "mean": null,
+          "median": null,
+          "p10": null
+        }
+      },
+      "id_metrics": {
+        "embedding": {
+          "id_precision": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "id_recall": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "must_hit_rate": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          }
+        },
+        "hyde": {
+          "id_precision": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "id_recall": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "must_hit_rate": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          }
+        },
+        "rrf": {
+          "id_precision": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "id_recall": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "must_hit_rate": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          }
+        },
+        "rerank": {
+          "id_precision": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "id_recall": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          },
+          "must_hit_rate": {
+            "valid_count": 0,
+            "mean": null,
+            "median": null,
+            "p10": null
+          }
+        }
+      }
+    }
+  },
+  "abstention_accuracy": {
+    "valid_count": 0,
+    "value": null
+  },
+  "error_types": {},
+  "aggregation_policy": "仅聚合非 null 数值；失败和不适用值不作为 0；P10 使用排序后的线性插值。"
+}

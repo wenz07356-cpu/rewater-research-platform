@@ -21,6 +21,7 @@ class HistoryRepository:
         text: str,
         rewritten_query: str = "",
         item_names: list[str] | None = None,
+        query_filters: dict | None = None,
         image_urls: list[str] | None = None,
         message_id: str | None = None,
     ) -> str:
@@ -30,6 +31,7 @@ class HistoryRepository:
             text=text,
             rewritten_query=rewritten_query,
             item_names=item_names,
+            query_filters=query_filters,
             image_urls=image_urls,
             message_id=message_id,
         )

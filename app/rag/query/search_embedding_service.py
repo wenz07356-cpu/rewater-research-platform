@@ -1,88 +1,260 @@
+"""BGE-M3 + Milvus 普通混合检索服务。"""
 
-from app.process.query.agent.state import QueryGraphState
-from app.shared.runtime.logger import logger
+import json
+import re
+from typing import Any
+
 from app.infra.llm.providers import llm_provider
 from app.infra.vector_store.milvus_gateway import milvus_gateway
+from app.process.query.agent.state import QueryGraphState
+from app.rag.query.config import (
+    DENSE_WEIGHT,
+    DOCUMENT_TYPES,
+    HARD_FILTER_FIELDS,
+    LOCAL_OUTPUT_FIELDS,
+    QUERY_FILTER_MAX_VALUES,
+    RETRIEVAL_QUERY_MAX_CHARS,
+    SEARCH_ANN_LIMIT,
+    SEARCH_TOP_K,
+    SPARSE_WEIGHT,
+    default_query_filters,
+)
+from app.shared.runtime.logger import logger, step_log
 
-def get_data_and_validates(state:QueryGraphState)-> tuple[list[str],str]:
-    """"""
-    # 1. 获取数据
-    item_names = state.get("item_names",[])
-    rewritten_query = state.get("rewritten_query")
-    # 2. 非空校验
-    if len(item_names) == 0 or not rewritten_query:
-        logger.error(f"关联的主体或者重写的问题为空,业务无法继续,提前终止!")
-        raise ValueError(f"关联的主体或者重写的问题为空,业务无法继续,提前终止!")
-    # 3. 返回结果
-    return item_names,rewritten_query
+_SPACE_RE = re.compile(r"\s+")
 
 
-def search_by_milvus(item_names:list[str], rewritten_query:str):
-    # 1. rewritten_query进行向量化
-    result =  llm_provider.embed_documents([rewritten_query])
-    # 2. 组装reqs请求列表(AnnSearchRequest)
-    reqs = milvus_gateway.create_requests(
-        dense_vector=result['dense'][0],
-        sparse_vector=result['sparse'][0],
-        expr=f"item_name in  {item_names}",
-        limit=5*2
+def _string_list(value: Any) -> list[str]:
+    """规范化查询过滤中的字符串列表。"""
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = _SPACE_RE.sub(" ", str(item or "")).strip()
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= QUERY_FILTER_MAX_VALUES:
+            break
+    return result
+
+
+def normalize_query_filters(value: Any) -> dict[str, Any]:
+    """生成可被检索层安全使用的过滤结构。"""
+    result = default_query_filters()
+    if not isinstance(value, dict):
+        return result
+    for field in (
+        "file_titles",
+        "region_names",
+        "document_types",
+        "topics",
+        "keywords",
+    ):
+        result[field] = _string_list(value.get(field))
+    result["document_types"] = [
+        item for item in result["document_types"] if item in DOCUMENT_TYPES
+    ]
+    result["hard_fields"] = [
+        item
+        for item in _string_list(value.get("hard_fields"))
+        if item in HARD_FILTER_FIELDS and result.get(item)
+    ]
+    result["strict"] = bool(value.get("strict", False))
+    return result
+
+
+@step_log("validate_retrieval_state")
+def validate_retrieval_state(
+    state: QueryGraphState,
+) -> tuple[str, dict[str, Any]]:
+    """校验本地检索输入。
+
+    输入：包含 rewritten_query 和可选 query_filters 的状态。
+    输出：清洗后的问题和过滤结构。
+    步骤：校验问题非空，再次规范化过滤字段，防止绕过入口节点。
+    """
+    rewritten_query = _SPACE_RE.sub(
+        " ", str(state.get("rewritten_query") or "")
+    ).strip()
+    if not rewritten_query:
+        logger.error("本地检索缺少 rewritten_query")
+        raise ValueError("rewritten_query 不能为空")
+    return rewritten_query, normalize_query_filters(state.get("query_filters"))
+
+
+def build_retrieval_query(
+    rewritten_query: str,
+    query_filters: dict[str, Any],
+) -> str:
+    """将软 metadata 转换为简洁的向量检索文本。"""
+    parts = [rewritten_query]
+    labels = (
+        ("file_titles", "文件"),
+        ("region_names", "地域"),
+        ("topics", "主题"),
+        ("keywords", "关键词"),
     )
-    # 3. 进行混合检索处理
-    milvus_result =  milvus_gateway.hybrid_search(
-        collection_name=milvus_gateway.chunks_collection,
-        reqs=reqs,
-        ranker_weights=(0.6,0.4),
-        norm_score=True,
-        limit=5,
-        output_fields=[
-            # chunk_id file_title title parent_title part item_name content x x
-            #  {} -> lm -> 润色
-            "chunk_id",
-            "file_title",
-            "title",
-            "parent_title",
-            "part",
-            "item_name",
-            "content"
+    for field, label in labels:
+        values = [
+            item
+            for item in query_filters.get(field, [])
+            if item not in rewritten_query
         ]
+        if values:
+            parts.append(f"{label}：{'、'.join(values)}")
+    result = "\n".join(parts)
+    if len(result) > RETRIEVAL_QUERY_MAX_CHARS:
+        logger.warning("增强检索文本过长，仅保留改写问题")
+        return rewritten_query[:RETRIEVAL_QUERY_MAX_CHARS]
+    return result
+
+
+def build_milvus_filter_expr(
+    query_filters: dict[str, Any],
+) -> str | None:
+    """构造安全的 Milvus metadata 表达式。
+
+    同字段多值使用 IN/ARRAY_CONTAINS_ANY，不同字段使用 AND。字符串通过
+    JSON 序列化，禁止直接拼接原始用户字面量。
+    """
+    hard_fields = set(query_filters.get("hard_fields", []))
+    expressions: list[str] = []
+    if "file_titles" in hard_fields:
+        values = json.dumps(query_filters["file_titles"], ensure_ascii=False)
+        expressions.append(f"file_title in {values}")
+    if "document_types" in hard_fields:
+        values = json.dumps(
+            query_filters["document_types"], ensure_ascii=False
+        )
+        expressions.append(f"document_type in {values}")
+    if "region_names" in hard_fields:
+        regions = list(query_filters["region_names"])
+        if not query_filters.get("strict") and "全国" not in regions:
+            regions.append("全国")
+        values = json.dumps(regions, ensure_ascii=False)
+        expressions.append(f"ARRAY_CONTAINS_ANY(region_names, {values})")
+    return " and ".join(expressions) or None
+
+
+@step_log("embed_retrieval_query")
+def embed_retrieval_query(
+    retrieval_query: str,
+) -> tuple[list[float], dict[int, float]]:
+    """生成一条查询的稠密和稀疏 BGE-M3 向量。"""
+    vectors = llm_provider.embed_documents([retrieval_query])
+    dense = vectors.get("dense") or []
+    sparse = vectors.get("sparse") or []
+    if len(dense) != 1 or len(sparse) != 1:
+        raise ValueError("BGE-M3 查询向量返回数量异常")
+    if len(dense[0]) == 0 or len(sparse[0]) == 0:
+        raise ValueError("BGE-M3 查询向量不能为空")
+    return dense[0], sparse[0]
+
+
+@step_log("search_chunks_by_milvus")
+def search_chunks_by_milvus(
+    dense_vector: list[float],
+    sparse_vector: dict[int, float],
+    filter_expr: str | None,
+) -> list[Any]:
+    """从当前配置的新版 chunks collection 执行混合检索。"""
+    requests = milvus_gateway.create_requests(
+        dense_vector=dense_vector,
+        sparse_vector=sparse_vector,
+        expr=filter_expr,
+        limit=SEARCH_ANN_LIMIT,
     )
-    # milvus_result = [ [id/chunk_id:主键,distance:分,entity:{}] ] -> 外面没有意义! 保证对称性 单列检索
-    # 4. 返回结果
-    return milvus_result[0] if milvus_result and len(milvus_result) >0 else []
+    result = milvus_gateway.hybrid_search(
+        collection_name=milvus_gateway.chunks_collection,
+        reqs=requests,
+        ranker_weights=(DENSE_WEIGHT, SPARSE_WEIGHT),
+        norm_score=True,
+        limit=SEARCH_TOP_K,
+        output_fields=LOCAL_OUTPUT_FIELDS,
+    )
+    if not result:
+        return []
+    return list(result[0] or [])
 
 
-def deal_milvus_list(milvus_list):
-    # {id / chunk_id,distance,entityL{}} -> {}
-    embedding_chunks = []
-    for item in milvus_list:
-        entity = item.get("entity",{})
-        embedding_chunks.append({
-            "chunk_id": entity.get("chunk_id") ,  # item.get("id") or item.get("chunk_id")
-            "score": item.get("distance",0.0),
-            "title":entity.get("title"),
-            "file_title":entity.get("file_title"),
-            "parent_title":entity.get("parent_title"),
-            "part":entity.get("part"),
-            "item_name":entity.get("item_name"),
-            "content":entity.get("content"),
-            "source": "milvus",  # 直接查询 或者假设性查询  milvus 网络检索 web
-            "url":""
-        })
-    return embedding_chunks
+def build_display_title(file_title: str, section_title: str) -> str:
+    """按统一展示规则生成文件/章节标题。"""
+    file_title = str(file_title or "").strip()
+    section_title = str(section_title or "").strip()
+    if section_title and section_title != file_title:
+        return f"{file_title} / {section_title}"
+    return file_title
 
-def search_by_embedding(state: QueryGraphState) -> QueryGraphState:
+
+def normalize_local_candidates(
+    milvus_hits: list[Any],
+    retrieval_source: str,
+) -> list[dict[str, Any]]:
+    """将 Milvus 命中映射为 query 全链路统一候选。"""
+    candidates: list[dict[str, Any]] = []
+    for hit in milvus_hits:
+        entity = hit.get("entity", {}) if hasattr(hit, "get") else {}
+        chunk_id = str(entity.get("chunk_id") or "").strip()
+        content = str(entity.get("content") or "").strip()
+        file_title = str(entity.get("file_title") or "").strip()
+        if not chunk_id or not content or not file_title:
+            logger.warning(
+                "跳过缺少 chunk_id/content/file_title 的 Milvus 命中"
+            )
+            continue
+        section_title = str(entity.get("section_title") or "").strip()
+        candidates.append(
+            {
+                "chunk_id": chunk_id,
+                "document_id": entity.get("document_id"),
+                "chunk_index": entity.get("chunk_index"),
+                "file_title": file_title,
+                "section_title": section_title,
+                "display_title": build_display_title(
+                    file_title, section_title
+                ),
+                "content": content,
+                "context_type": entity.get("context_type") or "text",
+                "region_names": entity.get("region_names") or [],
+                "document_type": entity.get("document_type") or "其他",
+                "topics": entity.get("topics") or [],
+                "keywords": entity.get("keywords") or [],
+                "token_count": entity.get("token_count") or 0,
+                "score": float(hit.get("distance") or 0.0),
+                "source": "milvus",
+                "retrieval_source": retrieval_source,
+                "url": "",
+            }
+        )
+    return candidates
+
+
+@step_log("search_chunks")
+def search_chunks(state: QueryGraphState) -> dict[str, list[dict[str, Any]]]:
+    """执行普通混合检索。
+
+    输入：包含 rewritten_query/query_filters 的查询状态。
+    输出：仅包含 embedding_chunks 的状态增量。
+    步骤：构造检索文本和过滤条件，生成双向量，查询 Milvus 并统一候选；
+    外部检索异常时记录日志并返回空列表。
     """
-    向量检索服务：
-    1. 根据改写后的问题和限定的商品范围
-    2. 利用 BGEM3 混合检索（稠密+稀疏）技术
-    3. 从 Milvus 向量数据库中召回 Top-K 最相关的知识切片
-    4. 回写 embedding_chunks
-    """
-    # 1. 获取并校验参数(state) -> item_names rewritten_query
-    item_names,rewritten_query = get_data_and_validates(state)
-    # 2. 进行向量的混合+条件检索(item_names rewritten_query) -> [{id/chunk_id:x,distance:0.9,entity:{输出的field} }]
-    milvus_list = search_by_milvus(item_names,rewritten_query)
-    # 3. 进行结果的统一格式化处理( [{id/chunk_id:x,distance:0.9,entity:{输出的field} }]) -> [{id:x,输出的field,score:,type:milvus,url:""},{},{}]
-    embedding_chunks = deal_milvus_list(milvus_list)
-    # 4. 返回结果即可
-    return {"embedding_chunks": embedding_chunks}
+    rewritten_query, filters = validate_retrieval_state(state)
+    try:
+        retrieval_query = build_retrieval_query(rewritten_query, filters)
+        filter_expr = build_milvus_filter_expr(filters)
+        dense, sparse = embed_retrieval_query(retrieval_query)
+        hits = search_chunks_by_milvus(dense, sparse, filter_expr)
+        candidates = normalize_local_candidates(hits, "embedding")
+        logger.info(
+            "普通混合检索完成："
+            f"collection={milvus_gateway.chunks_collection}, "
+            f"filtered={bool(filter_expr)}, hits={len(candidates)}"
+        )
+        return {"embedding_chunks": candidates}
+    except Exception as exc:
+        logger.exception(f"普通混合检索失败，降级为空结果：error={exc}")
+        return {"embedding_chunks": []}
+
+
+# 旧节点调用方兼容。
+search_by_embedding = search_chunks

@@ -197,6 +197,20 @@
       text-decoration:none;
       word-break:break-all;
     }
+    .answer-source-link{
+      color:var(--brand2);
+      font-weight:600;
+      text-decoration:underline;
+      text-underline-offset:2px;
+    }
+    .answer-source-link:hover{
+      color:var(--brand);
+    }
+    .answer-source-link:focus-visible{
+      outline:2px solid var(--brand);
+      outline-offset:2px;
+      border-radius:3px;
+    }
 
     .typing{
       display:inline-flex;gap:6px;align-items:center;
@@ -357,6 +371,57 @@
       return s.replace(/\s/g, '%20');
     }
 
+    function normalizeExternalSourceUrl(rawUrl){
+      const normalized = normalizeUrl(rawUrl);
+      if(!normalized) return '';
+      try{
+        const parsed = new URL(normalized);
+        if(parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+        return parsed.href;
+      }catch(_){
+        return '';
+      }
+    }
+
+    function renderAnswerTextWithSourceLinks(containerEl, answerText){
+      const text = String(answerText || '');
+      const sourcePattern = /\[网络搜索\/(https?:\/\/[^\]\s]+)\]/gi;
+      let cursor = 0;
+      let match;
+
+      containerEl.textContent = '';
+      while((match = sourcePattern.exec(text)) !== null){
+        if(match.index > cursor){
+          containerEl.appendChild(
+            document.createTextNode(text.slice(cursor, match.index))
+          );
+        }
+
+        const safeUrl = normalizeExternalSourceUrl(match[1]);
+        if(!safeUrl){
+          containerEl.appendChild(document.createTextNode(match[0]));
+        }else{
+          containerEl.appendChild(document.createTextNode('['));
+          const link = document.createElement('a');
+          link.className = 'answer-source-link';
+          link.href = safeUrl;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.referrerPolicy = 'no-referrer';
+          link.textContent = '网络搜索';
+          link.title = safeUrl;
+          link.setAttribute('aria-label', '打开网络搜索来源（新窗口）');
+          containerEl.appendChild(link);
+          containerEl.appendChild(document.createTextNode(']'));
+        }
+        cursor = sourcePattern.lastIndex;
+      }
+
+      if(cursor < text.length){
+        containerEl.appendChild(document.createTextNode(text.slice(cursor)));
+      }
+    }
+
     function dedupeKeepOrder(arr){
       const seen = new Set();
       const out = [];
@@ -483,7 +548,7 @@
       if((text || '').trim().length > 0){
         const textEl = document.createElement('div');
         textEl.className = 'answer-text';
-        textEl.textContent = text;
+        renderAnswerTextWithSourceLinks(textEl, text);
         containerEl.appendChild(textEl);
       }else{
         const textEl = document.createElement('div');

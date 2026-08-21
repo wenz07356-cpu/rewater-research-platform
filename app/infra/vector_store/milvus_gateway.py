@@ -105,5 +105,21 @@ class MilvusGateway:
             search_params=search_params,
         )
 
+    def query(
+        self,
+        *,
+        collection_name: str,
+        filter_expr: str,
+        output_fields: list[str],
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """只读查询 collection 元数据，隔离 HTTP 层与底层客户端。"""
+        return list(self.client().query(
+            collection_name=collection_name,
+            filter=filter_expr,
+            output_fields=output_fields,
+            limit=limit,
+        ) or [])
+
 
 milvus_gateway = MilvusGateway()

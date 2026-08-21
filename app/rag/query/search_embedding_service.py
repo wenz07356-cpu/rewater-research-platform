@@ -19,6 +19,7 @@ from app.rag.query.config import (
     SPARSE_WEIGHT,
     default_query_filters,
 )
+from app.rag.query.retrieval_config import get_effective_retrieval_config
 from app.shared.runtime.logger import logger, step_log
 
 _SPACE_RE = re.compile(r"\s+")
@@ -119,9 +120,6 @@ def build_milvus_filter_expr(
     """
     hard_fields = set(query_filters.get("hard_fields", []))
     expressions: list[str] = []
-    if "file_titles" in hard_fields:
-        values = json.dumps(query_filters["file_titles"], ensure_ascii=False)
-        expressions.append(f"file_title in {values}")
     if "document_types" in hard_fields:
         values = json.dumps(
             query_filters["document_types"], ensure_ascii=False
@@ -156,20 +154,25 @@ def search_chunks_by_milvus(
     dense_vector: list[float],
     sparse_vector: dict[int, float],
     filter_expr: str | None,
+    *,
+    ann_limit: int = SEARCH_ANN_LIMIT,
+    top_k: int = SEARCH_TOP_K,
+    dense_weight: float = DENSE_WEIGHT,
+    sparse_weight: float = SPARSE_WEIGHT,
 ) -> list[Any]:
     """从当前配置的新版 chunks collection 执行混合检索。"""
     requests = milvus_gateway.create_requests(
         dense_vector=dense_vector,
         sparse_vector=sparse_vector,
         expr=filter_expr,
-        limit=SEARCH_ANN_LIMIT,
+        limit=ann_limit,
     )
     result = milvus_gateway.hybrid_search(
         collection_name=milvus_gateway.chunks_collection,
         reqs=requests,
-        ranker_weights=(DENSE_WEIGHT, SPARSE_WEIGHT),
+        ranker_weights=(dense_weight, sparse_weight),
         norm_score=True,
-        limit=SEARCH_TOP_K,
+        limit=top_k,
         output_fields=LOCAL_OUTPUT_FIELDS,
     )
     if not result:
@@ -230,7 +233,7 @@ def normalize_local_candidates(
 
 
 @step_log("search_chunks")
-def search_chunks(state: QueryGraphState) -> dict[str, list[dict[str, Any]]]:
+def search_chunks(state: QueryGraphState) -> dict[str, Any]:
     """执行普通混合检索。
 
     输入：包含 rewritten_query/query_filters 的查询状态。
@@ -239,21 +242,28 @@ def search_chunks(state: QueryGraphState) -> dict[str, list[dict[str, Any]]]:
     外部检索异常时记录日志并返回空列表。
     """
     rewritten_query, filters = validate_retrieval_state(state)
+    retrieval_config = get_effective_retrieval_config(state)
     try:
         retrieval_query = build_retrieval_query(rewritten_query, filters)
         filter_expr = build_milvus_filter_expr(filters)
         dense, sparse = embed_retrieval_query(retrieval_query)
-        hits = search_chunks_by_milvus(dense, sparse, filter_expr)
+        hits = search_chunks_by_milvus(
+            dense, sparse, filter_expr,
+            ann_limit=retrieval_config.ann_limit,
+            top_k=retrieval_config.search_top_k,
+            dense_weight=retrieval_config.dense_weight,
+            sparse_weight=retrieval_config.sparse_weight,
+        )
         candidates = normalize_local_candidates(hits, "embedding")
         logger.info(
             "普通混合检索完成："
             f"collection={milvus_gateway.chunks_collection}, "
             f"filtered={bool(filter_expr)}, hits={len(candidates)}"
         )
-        return {"embedding_chunks": candidates}
+        return {"embedding_chunks": candidates, "embedding_status": "success"}
     except Exception as exc:
         logger.exception(f"普通混合检索失败，降级为空结果：error={exc}")
-        return {"embedding_chunks": []}
+        return {"embedding_chunks": [], "embedding_status": "failed"}
 
 
 # 旧节点调用方兼容。

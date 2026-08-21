@@ -6,6 +6,10 @@ from typing import Any
 from typing_extensions import TypedDict
 
 from app.rag.query.config import default_query_filters
+from app.rag.query.retrieval_config import (
+    EffectiveRetrievalConfig,
+    resolve_retrieval_config,
+)
 
 
 class QueryGraphState(TypedDict):
@@ -15,16 +19,23 @@ class QueryGraphState(TypedDict):
     original_query: str
     rewritten_query: str
     query_filters: dict[str, Any]
+    retrieval_config: EffectiveRetrievalConfig
     history: list[dict[str, Any]]
     embedding_chunks: list[dict[str, Any]]
     hyde_embedding_chunks: list[dict[str, Any]]
     web_search_docs: list[dict[str, Any]]
     rrf_chunks: list[dict[str, Any]]
     reranked_docs: list[dict[str, Any]]
+    answer_context_docs: list[dict[str, Any]]
     prompt: str
     answer: str
     is_stream: bool
     image_urls: list[str]
+    retrieval_metadata: dict[str, Any]
+    embedding_status: str
+    hyde_status: str
+    web_status: str
+    reranker_status: str
     # 评估调用的局部副作用开关；生产入口默认均为 False。
     eval_disable_history: bool
     eval_disable_web: bool
@@ -39,16 +50,23 @@ def _build_default_state() -> QueryGraphState:
         "original_query": "",
         "rewritten_query": "",
         "query_filters": default_query_filters(),
+        "retrieval_config": resolve_retrieval_config(),
         "history": [],
         "embedding_chunks": [],
         "hyde_embedding_chunks": [],
         "web_search_docs": [],
         "rrf_chunks": [],
         "reranked_docs": [],
+        "answer_context_docs": [],
         "prompt": "",
         "answer": "",
         "is_stream": False,
         "image_urls": [],
+        "retrieval_metadata": {},
+        "embedding_status": "pending",
+        "hyde_status": "pending",
+        "web_status": "pending",
+        "reranker_status": "pending",
         "eval_disable_history": False,
         "eval_disable_web": False,
         "item_names": [],

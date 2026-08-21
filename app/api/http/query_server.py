@@ -1,6 +1,7 @@
 """
 查询服务 HTTP 入口模块，直接承载查询接口与相关接口业务逻辑。
 """
+from dataclasses import replace
 import sys
 import uuid
 from mimetypes import guess_type
@@ -12,16 +13,26 @@ if __package__ in (None, ""):
     if str(bootstrap_root) not in sys.path:
         sys.path.insert(0, str(bootstrap_root))
 
-from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
-from app.api.schemas.query import HistoryItem, HistoryResponse, QueryRequest, QueryResponse
+from app.api.schemas.query import (
+    HistoryItem,
+    HistoryResponse,
+    QueryRequest,
+    QueryResponse,
+    RetrievalMetadata,
+)
 from app.shared.runtime.logger import PROJECT_ROOT, logger
 from app.infra.config import settings
 from app.infra.persistence.history_repository import history_repository
 from app.process.query.agent.main_graph import query_app as query_graph_app
 from app.process.query.agent.state import create_query_default_state
+from app.rag.query.retrieval_config import (
+    EffectiveRetrievalConfig, build_retrieval_metadata, resolve_retrieval_config,
+)
 from app.shared.utils.sse_utils import SSEEvent, create_sse_queue, push_to_session, sse_generator
 from app.shared.utils.task_utils import (
     TASK_STATUS_COMPLETED,
@@ -45,6 +56,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount(
+    "/query-assets",
+    StaticFiles(
+        directory=(
+            PROJECT_ROOT / "app" / "process" / "query" / "page" / "assets"
+        )
+    ),
+    name="query-assets",
+)
 
 
 def new_session_id() -> str:
@@ -57,7 +77,13 @@ def new_session_id() -> str:
     return str(uuid.uuid4())
 
 
-def invoke_query(session_id: str, query: str, is_stream: bool) -> dict:
+def invoke_query(
+    session_id: str,
+    query: str,
+    is_stream: bool,
+    *,
+    retrieval_config: EffectiveRetrievalConfig | None = None,
+) -> dict:
     """
     调用查询主图并维护统一的任务状态。
 
@@ -75,13 +101,16 @@ def invoke_query(session_id: str, query: str, is_stream: bool) -> dict:
         session_id=session_id,
         original_query=query,
         is_stream=is_stream,
+        retrieval_config=retrieval_config or resolve_retrieval_config(),
     )
     state = query_graph_app.invoke(initial_state)
     update_task_status(session_id, TASK_STATUS_COMPLETED, is_stream)
     return state
 
 
-def run_stream_query_background(session_id: str, query: str) -> None:
+def run_stream_query_background(
+    session_id: str, query: str, prepared: dict,
+) -> None:
     """
     在后台执行一次流式查询任务。
 
@@ -90,7 +119,9 @@ def run_stream_query_background(session_id: str, query: str) -> None:
         query: 用户原始问题。
     """
     try:
-        state = invoke_query(session_id=session_id, query=query, is_stream=True)
+        state = invoke_query(
+            session_id=session_id, query=query, is_stream=True, **prepared
+        )
         push_to_session(
             session_id,
             SSEEvent.FINAL,
@@ -98,6 +129,8 @@ def run_stream_query_background(session_id: str, query: str) -> None:
                 "answer": get_task_result(session_id, "answer") or state.get("answer", ""),
                 "status": "completed",
                 "image_urls": state.get("image_urls", []),
+                "retrieval_metadata": state.get("retrieval_metadata")
+                or build_retrieval_metadata(state),
             },
         )
 
@@ -115,6 +148,7 @@ def start_stream_query(
     background_tasks: BackgroundTasks,
     query: str,
     session_id: str | None = None,
+    prepared: dict | None = None,
 ) -> QueryResponse:
     """
     启动一条流式查询任务。
@@ -133,11 +167,18 @@ def start_stream_query(
         run_stream_query_background,
         final_session_id,
         query,
+        prepared or {},
     )
-    return QueryResponse(message="结果正在处理中...", session_id=final_session_id)
+    initial_state = create_query_default_state(**(prepared or {}))
+    return QueryResponse(
+        message="结果正在处理中...", session_id=final_session_id,
+        retrieval_metadata=build_retrieval_metadata(initial_state),
+    )
 
 
-def execute_query(query: str, session_id: str | None = None) -> QueryResponse:
+def execute_query(
+    query: str, session_id: str | None = None, *, prepared: dict | None = None,
+) -> QueryResponse:
     """
     以非流式方式执行查询。
 
@@ -149,7 +190,10 @@ def execute_query(query: str, session_id: str | None = None) -> QueryResponse:
         QueryResponse: 包含最终答案和已完成节点的响应对象。
     """
     final_session_id = session_id or new_session_id()
-    state = invoke_query(session_id=final_session_id, query=query, is_stream=False)
+    state = invoke_query(
+        session_id=final_session_id, query=query, is_stream=False,
+        **(prepared or {}),
+    )
     answer = get_task_result(final_session_id, "answer") or state.get("answer", "")
     return QueryResponse(
         message="处理完成！",
@@ -157,6 +201,8 @@ def execute_query(query: str, session_id: str | None = None) -> QueryResponse:
         answer=answer,
         done_list=get_done_task_list(final_session_id),
         image_urls=state.get("image_urls", []),
+        retrieval_metadata=state.get("retrieval_metadata")
+        or build_retrieval_metadata(state),
     )
 
 
@@ -172,6 +218,16 @@ def build_history_response(session_id: str, limit: int = 10) -> HistoryResponse:
         HistoryResponse: 组装后的历史消息集合。
     """
     records = history_repository.list_recent(session_id, limit=limit)
+    def public_metadata(record: dict) -> RetrievalMetadata | None:
+        metadata = record.get("retrieval_metadata")
+        if not metadata:
+            return None
+        try:
+            return RetrievalMetadata.model_validate(metadata)
+        except Exception as exc:
+            logger.warning(f"忽略无效的旧检索元数据：error={exc}")
+            return None
+
     items = [
         HistoryItem(
             _id=str(record.get("_id")) if record.get("_id") is not None else "",
@@ -179,14 +235,36 @@ def build_history_response(session_id: str, limit: int = 10) -> HistoryResponse:
             role=record.get("role", ""),
             text=record.get("text", ""),
             rewritten_query=record.get("rewritten_query", ""),
-            item_names=record.get("item_names", []),
-            query_filters=record.get("query_filters", {}),
-            image_urls=record.get("image_urls", []),
+            item_names=record.get("item_names") or [],
+            query_filters=record.get("query_filters") or {},
+            image_urls=record.get("image_urls") or [],
+            retrieval_metadata=public_metadata(record),
             ts=record.get("ts"),
         )
         for record in records
     ]
     return HistoryResponse(session_id=session_id, items=items)
+
+
+def prepare_query_request(request: QueryRequest) -> dict:
+    """在进入后台线程前解析本次请求的不可变检索配置。"""
+    mode = request.retrieval_mode.value if request.retrieval_mode else "balanced"
+    options = (
+        request.retrieval_options.model_dump(mode="json", exclude_none=True)
+        if request.retrieval_options else None
+    )
+    try:
+        retrieval_config = resolve_retrieval_config(mode, options)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # 联网搜索是独立的请求级选择；省略时保留模式预设或旧 custom 配置。
+    if request.web_enabled is not None:
+        retrieval_config = replace(
+            retrieval_config, web_enabled=request.web_enabled
+        )
+
+    return {"retrieval_config": retrieval_config}
 
 
 def clear_query_history(session_id: str) -> dict:
@@ -275,13 +353,18 @@ async def query(request: QueryRequest, background_tasks: BackgroundTasks):
     Returns:
         QueryResponse: 非流式时返回完整答案；流式时返回会话 ID 与处理中提示。
     """
+    final_session_id = request.session_id or new_session_id()
+    prepared = prepare_query_request(request)
     if request.is_stream:
         return start_stream_query(
             background_tasks=background_tasks,
             query=request.query,
-            session_id=request.session_id,
+            session_id=final_session_id,
+            prepared=prepared,
         )
-    return execute_query(query=request.query, session_id=request.session_id)
+    return execute_query(
+        query=request.query, session_id=final_session_id, prepared=prepared
+    )
 
 
 @app.get("/stream/{session_id}")

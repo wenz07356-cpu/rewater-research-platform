@@ -11,7 +11,6 @@ from app.infra.persistence.history_repository import history_repository
 from app.process.query.agent.state import QueryGraphState
 from app.rag.query.config import (
     DOCUMENT_TYPES,
-    HARD_FILTER_FIELDS,
     ORIGINAL_QUERY_MAX_CHARS,
     QUERY_FILTER_MAX_VALUES,
     QUERY_HISTORY_MAX_CHARS,
@@ -179,18 +178,11 @@ def normalize_query_understanding(
     ]
     filters["strict"] = bool(raw_result.get("strict", False))
 
-    requested_hard = _unique_strings(raw_result.get("hard_fields"))
-    hard_fields = [
-        field for field in requested_hard if field in HARD_FILTER_FIELDS
+    # 不采信模型直接给出的 hard_fields；只依据规范化 strict 和白名单字段生成。
+    filters["hard_fields"] = [
+        field for field in ("region_names", "document_types")
+        if filters["strict"] and filters.get(field)
     ]
-    # 文件标题没有独立权威目录可校验，只有排他提问且标题原文可见时才硬过滤。
-    if "file_titles" in hard_fields and not (
-        filters["strict"]
-        and any(title in original_query for title in filters["file_titles"])
-    ):
-        hard_fields.remove("file_titles")
-        logger.warning("file_titles 不满足严格精确条件，已降级为软检索条件")
-    filters["hard_fields"] = hard_fields
 
     needs_clarification = bool(raw_result.get("needs_clarification", False))
     clarification = str(raw_result.get("clarification_question") or "").strip()

@@ -7,7 +7,7 @@ from app.shared.utils.task_utils import add_done_task, add_running_task
 
 @node_log("node_answer_output")
 def node_answer_output(state: dict) -> dict:
-    """调用统一答案出口并返回 answer/image_urls/prompt 状态增量。"""
+    """调用统一答案出口并返回答案、图片、上下文与检索元数据。"""
     session_id = state["session_id"]
     is_stream = state.get("is_stream", False)
     add_running_task(session_id, "node_answer_output", is_stream)

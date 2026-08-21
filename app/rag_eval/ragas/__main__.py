@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -25,13 +26,34 @@ def main() -> None:
     parser.add_argument("--output-root")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--web", action="store_true", help="显式启用实时 Web 检索")
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=("balanced", "precision", "recall", "custom"),
+        default="balanced",
+    )
+    parser.add_argument(
+        "--retrieval-options",
+        help="custom 模式的 JSON 业务选项；复用生产配置解析器",
+    )
     parser.add_argument("--skip-ragas", action="store_true", help="只诊断真实检索和 ID 指标")
     args = parser.parse_args()
+    retrieval_options = None
+    if args.retrieval_options:
+        try:
+            retrieval_options = json.loads(args.retrieval_options)
+        except json.JSONDecodeError as exc:
+            parser.error(f"--retrieval-options 不是合法 JSON：{exc}")
+    if args.retrieval_mode == "custom" and retrieval_options is None:
+        parser.error("custom 模式必须提供 --retrieval-options")
+    if args.retrieval_mode != "custom" and retrieval_options is not None:
+        parser.error("仅 custom 模式允许 --retrieval-options")
     run_dir = run_evaluation(
         dataset_path=args.dataset, split=args.split,
         review_statuses=args.statuses or ("draft", "reviewed"),
         output_root=args.output_root, web_enabled=args.web,
         skip_ragas=args.skip_ragas, limit=args.limit,
+        retrieval_mode=args.retrieval_mode,
+        retrieval_options=retrieval_options,
     )
     print(run_dir)
 

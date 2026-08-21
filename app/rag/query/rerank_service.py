@@ -21,6 +21,7 @@ from app.rag.query.config import (
 )
 from app.shared.runtime.load_prompt import load_prompt
 from app.shared.runtime.logger import logger, step_log
+from app.rag.query.retrieval_config import get_effective_retrieval_config
 
 
 def validate_rerank_inputs(
@@ -158,19 +159,24 @@ def select_dynamic_top_k(
     candidates: list[dict[str, Any]],
     *,
     strict_single_file: bool = False,
+    min_topk: int = RERANK_MIN_TOPK,
+    max_topk: int = RERANK_MAX_TOPK,
+    gap_ratio: float = RERANK_GAP_RATIO,
+    gap_abs: float = RERANK_GAP_ABS,
+    max_per_document: int = RERANK_MAX_PER_DOCUMENT,
 ) -> list[dict[str, Any]]:
     """根据分数断崖选取 2～6 条，并按需控制同文档数量。"""
     if not candidates:
         return []
-    max_count = min(RERANK_MAX_TOPK, len(candidates))
+    max_count = min(max_topk, len(candidates))
     top_k = max_count
-    if max_count > RERANK_MIN_TOPK:
-        for index in range(RERANK_MIN_TOPK - 1, max_count - 1):
+    if max_count > min_topk:
+        for index in range(min_topk - 1, max_count - 1):
             current = float(candidates[index].get("score") or 0.0)
             following = float(candidates[index + 1].get("score") or 0.0)
             absolute_gap = current - following
             relative_gap = absolute_gap / current if current > 0 else 0.0
-            if absolute_gap >= RERANK_GAP_ABS or relative_gap >= RERANK_GAP_RATIO:
+            if absolute_gap >= gap_abs or relative_gap >= gap_ratio:
                 top_k = index + 1
                 break
     selected = candidates[:top_k]
@@ -188,7 +194,7 @@ def select_dynamic_top_k(
             or candidate.get("candidate_id")
             or ""
         )
-        if counts.get(document_id, 0) >= RERANK_MAX_PER_DOCUMENT:
+        if counts.get(document_id, 0) >= max_per_document:
             continue
         counts[document_id] = counts.get(document_id, 0) + 1
         diversified.append(candidate)
@@ -198,7 +204,7 @@ def select_dynamic_top_k(
 @step_log("rerank_documents")
 def rerank_documents(
     state: QueryGraphState,
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, Any]:
     """统一精排本地与 Web 候选。
 
     输入：包含 rewritten_query/rrf_chunks/web_search_docs/query_filters 的状态。
@@ -207,29 +213,32 @@ def rerank_documents(
     模型异常时按上游顺序降级。
     """
     query, local_docs, web_docs = validate_rerank_inputs(state)
+    retrieval_config = get_effective_retrieval_config(state)
     candidates = merge_rerank_candidates(local_docs, web_docs)
     if not candidates:
         logger.warning("本地和 Web 均无候选，Reranker 返回空列表")
-        return {"reranked_docs": []}
-    filters = state.get("query_filters") or {}
-    strict_single_file = bool(
-        filters.get("strict")
-        and "file_titles" in filters.get("hard_fields", [])
-        and len(filters.get("file_titles", [])) == 1
-    )
+        return {"reranked_docs": [], "reranker_status": "success"}
     try:
         pairs = create_rerank_pairs(query, candidates)
         ranked = score_and_sort_candidates(pairs, candidates)
         selected = select_dynamic_top_k(
-            ranked, strict_single_file=strict_single_file
+            ranked,
+            strict_single_file=False,
+            min_topk=retrieval_config.rerank_min_topk,
+            max_topk=retrieval_config.rerank_max_topk,
+            gap_ratio=retrieval_config.rerank_gap_ratio,
+            gap_abs=retrieval_config.rerank_gap_abs,
+            max_per_document=retrieval_config.rerank_max_per_document,
         )
+        status = "success"
     except Exception as exc:
         logger.exception(
             f"Reranker 执行失败，按上游顺序降级：error={exc}"
         )
-        selected = candidates[:RERANK_MAX_TOPK]
+        selected = candidates[:retrieval_config.rerank_max_topk]
+        status = "failed"
     logger.info(
         f"Reranker 完成：local={len(local_docs)}, web={len(web_docs)}, "
         f"candidates={len(candidates)}, selected={len(selected)}"
     )
-    return {"reranked_docs": selected}
+    return {"reranked_docs": selected, "reranker_status": status}

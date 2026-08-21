@@ -110,6 +110,7 @@ def save_chat_message(
         item_names: list[str] | None = None,
         query_filters: dict[str, Any] | None = None,
         image_urls: list[str] | None = None,
+        retrieval_metadata: dict[str, Any] | None = None,
         message_id: str | None = None
 ) -> str:
     """
@@ -137,6 +138,7 @@ def save_chat_message(
         "item_names": item_names or [],  # 旧版兼容字段
         "query_filters": query_filters or {},
         "image_urls": image_urls,  # 关联图片URL列表
+        "retrieval_metadata": dict(retrieval_metadata or {}),
         "ts": ts  # 时间戳，排序和时间筛选维度
     }
 

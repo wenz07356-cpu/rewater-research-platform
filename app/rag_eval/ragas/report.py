@@ -17,7 +17,8 @@ RESULT_COLUMNS = (
     "run_id", "case_id", "response", "retrieved_contexts_json",
     "layer_results_json", "faithfulness", "answer_relevancy",
     "context_precision", "context_recall", "answer_correctness",
-    "id_metrics_json", "latency_ms", "error_message", "config_snapshot_json",
+    "id_metrics_json", "final_context_count", "latency_ms", "error_message",
+    "config_snapshot_json",
 )
 RAGAS_FIELDS = RESULT_COLUMNS[5:10]
 
@@ -74,7 +75,14 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             id_metrics[layer][field] = _stats(
                 (row.get("_id_metrics") or {}).get(layer, {}).get(field) for row in rows
             )
-    return {"sample_count": len(rows), "ragas": ragas, "id_metrics": id_metrics}
+    return {
+        "sample_count": len(rows),
+        "ragas": ragas,
+        "id_metrics": id_metrics,
+        "final_context_count": _stats(
+            row.get("final_context_count") for row in rows
+        ),
+    }
 
 
 def build_summary(

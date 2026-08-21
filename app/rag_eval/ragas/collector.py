@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from .dataset import GoldCase
@@ -46,27 +47,36 @@ def collect_query(
     run_id: str,
     graph_app: Any | None = None,
     web_enabled: bool = False,
+    retrieval_mode: str = "balanced",
+    retrieval_options: dict[str, Any] | None = None,
 ) -> QueryTrace:
     """以无历史、默认无 Web 的评估状态执行一次真实查询。"""
     if graph_app is None:
         from app.process.query.agent.main_graph import query_app
         graph_app = query_app
     from app.process.query.agent.state import create_query_default_state
+    from app.rag.query.retrieval_config import resolve_retrieval_config
 
     session_id = f"eval-{run_id}-{case.case_id}"
+    retrieval_config = resolve_retrieval_config(
+        retrieval_mode, retrieval_options
+    )
+    if web_enabled:
+        retrieval_config = replace(retrieval_config, web_enabled=True)
     state = graph_app.invoke(create_query_default_state(
         session_id=session_id,
         original_query=case.user_input,
         is_stream=False,
         eval_disable_history=True,
         eval_disable_web=not web_enabled,
+        retrieval_config=retrieval_config,
     ))
     if not isinstance(state, dict):
         raise TypeError("查询图最终状态必须为字典")
     response = str(state.get("answer") or "").strip()
     if not response:
         raise ValueError("查询图最终状态缺少 answer")
-    reranked = state.get("reranked_docs") or []
+    reranked = state.get("answer_context_docs") or state.get("reranked_docs") or []
     if not isinstance(reranked, list):
         raise TypeError("reranked_docs 必须为列表")
     contexts: list[str] = []

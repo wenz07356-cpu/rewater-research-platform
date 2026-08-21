@@ -10,6 +10,7 @@ from app.rag.query.config import (
     RRF_K,
     RRF_TOP_K,
 )
+from app.rag.query.retrieval_config import get_effective_retrieval_config
 from app.shared.runtime.logger import logger, step_log
 
 
@@ -74,11 +75,14 @@ def fuse_retrieval_results(
     两路均空时返回空列表。
     """
     embedding, hyde = validate_rrf_inputs(state)
+    retrieval_config = get_effective_retrieval_config(state)
     result = reciprocal_rank_fusion(
         [
-            (RRF_EMBEDDING_WEIGHT, embedding),
-            (RRF_HYDE_WEIGHT, hyde),
-        ]
+            (retrieval_config.rrf_embedding_weight, embedding),
+            (retrieval_config.rrf_hyde_weight, hyde),
+        ],
+        k=retrieval_config.rrf_k,
+        limit=retrieval_config.rrf_top_k,
     )
     if not embedding and not hyde:
         logger.warning("普通检索与 HyDE 均无结果，RRF 返回空列表")

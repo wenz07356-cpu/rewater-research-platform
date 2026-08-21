@@ -15,6 +15,7 @@ from app.rag.query.config import (
     WEB_SEARCH_TOP_K,
 )
 from app.rag.query.search_embedding_service import normalize_query_filters
+from app.rag.query.retrieval_config import get_effective_retrieval_config
 from app.shared.config.bailian_mcp_config import mcp_config
 from app.shared.runtime.logger import logger, step_log
 
@@ -161,8 +162,8 @@ def parse_web_search_response(
 @step_log("search_web_documents")
 def search_web_documents(
     state: QueryGraphState,
-    count: int = WEB_SEARCH_TOP_K,
-) -> dict[str, list[dict[str, Any]]]:
+    count: int | None = None,
+) -> dict[str, Any]:
     """执行联网搜索。
 
     输入：包含 rewritten_query/query_filters 的状态和结果数量上限。
@@ -170,13 +171,18 @@ def search_web_documents(
     步骤：校验输入、构造查询、同步运行 MCP 协程、解析候选；外部异常时
     记录日志并返回空列表。
     """
+    retrieval_config = get_effective_retrieval_config(state)
+    if not retrieval_config.web_enabled or state.get("eval_disable_web"):
+        logger.info("当前请求已关闭 Web 搜索")
+        return {"web_search_docs": [], "web_status": "disabled"}
+    count = count or retrieval_config.web_top_k
     rewritten_query, filters = validate_web_search_inputs(state)
     try:
         query = build_web_search_query(rewritten_query, filters)
         raw_result = _run_coroutine(call_web_search_mcp(query, count))
         documents = parse_web_search_response(raw_result, count)
         logger.info(f"Web 搜索完成：query_length={len(query)}, hits={len(documents)}")
-        return {"web_search_docs": documents}
+        return {"web_search_docs": documents, "web_status": "success"}
     except Exception as exc:
         logger.exception(f"Web 搜索失败，降级为空结果：error={exc}")
-        return {"web_search_docs": []}
+        return {"web_search_docs": [], "web_status": "failed"}

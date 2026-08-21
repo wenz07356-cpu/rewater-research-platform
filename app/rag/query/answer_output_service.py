@@ -20,6 +20,10 @@ from app.shared.runtime.load_prompt import load_prompt
 from app.shared.runtime.logger import logger, step_log
 from app.shared.utils.sse_utils import SSEEvent, push_to_session
 from app.shared.utils.task_utils import set_task_result
+from app.rag.query.retrieval_config import (
+    build_retrieval_metadata,
+    get_effective_retrieval_config,
+)
 
 _IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 _LEGACY_SOURCE_RE = re.compile(r"\[来源(\d+)\]")
@@ -75,7 +79,10 @@ def build_source_label(document: dict[str, Any]) -> str:
     return f"[本地知识库/{file_title}/{section_title}]"
 
 
-def build_evidence_context(reranked_docs: list[dict[str, Any]]) -> str:
+def _build_evidence_context_details(
+    reranked_docs: list[dict[str, Any]],
+    max_context_chars: int = ANSWER_MAX_CONTEXT_CHARS,
+) -> tuple[str, list[dict[str, Any]]]:
     """构造包含可读来源标签的答案证据。
 
     输入：最终精排候选列表。
@@ -84,6 +91,7 @@ def build_evidence_context(reranked_docs: list[dict[str, Any]]) -> str:
     生成 ``[来源1]`` 一类需要二次查找的编号。
     """
     sections: list[str] = []
+    selected_documents: list[dict[str, Any]] = []
     length = 0
     for document in reranked_docs:
         source = "网络搜索" if document.get("source") == "web" else "本地知识库"
@@ -107,12 +115,26 @@ def build_evidence_context(reranked_docs: list[dict[str, Any]]) -> str:
             f"{'；'.join(metadata)}\n"
             f"内容：{document.get('content') or ''}"
         ).strip()
-        if sections and length + len(section) > ANSWER_MAX_CONTEXT_CHARS:
+        if length + len(section) > max_context_chars:
             logger.warning("答案证据达到上下文长度上限，停止追加低排名候选")
-            break
+            if sections:
+                break
+            section = section[:max_context_chars]
         sections.append(section)
+        selected_documents.append(document)
         length += len(section)
-    return "\n\n".join(sections)
+    return "\n\n".join(sections), selected_documents
+
+
+def build_evidence_context(
+    reranked_docs: list[dict[str, Any]],
+    max_context_chars: int = ANSWER_MAX_CONTEXT_CHARS,
+) -> str:
+    """兼容旧调用方，返回字符预算内的答案证据文本。"""
+    context, _ = _build_evidence_context_details(
+        reranked_docs, max_context_chars
+    )
+    return context
 
 
 def replace_legacy_source_labels(
@@ -236,6 +258,7 @@ def save_answer_history(
             ),
             item_names=[],
             image_urls=image_urls,
+            retrieval_metadata=state.get("retrieval_metadata") or {},
         )
     except Exception as exc:
         logger.exception(f"助手回答历史保存失败：error={exc}")
@@ -264,15 +287,26 @@ def produce_answer(state: QueryGraphState) -> dict[str, Any]:
                 )
             logger.warning("所有检索候选为空，使用固定无结果回答")
         else:
-            evidence = build_evidence_context(documents)
+            retrieval_config = get_effective_retrieval_config(state)
+            evidence, documents = _build_evidence_context_details(
+                documents, retrieval_config.answer_max_context_chars
+            )
             history = build_answer_history_context(state)
             prompt_text = load_answer_prompt(state, evidence, history)
             answer = generate_answer_by_llm(state, prompt_text)
             answer = replace_legacy_source_labels(answer, documents)
 
     image_urls = extract_image_urls(documents)
+    retrieval_metadata = build_retrieval_metadata({
+        **state, "answer": answer, "image_urls": image_urls,
+        "answer_context_docs": documents,
+    })
     if not state.get("eval_disable_history"):
-        save_answer_history(state, answer, image_urls)
+        save_answer_history(
+            {**state, "retrieval_metadata": retrieval_metadata},
+            answer,
+            image_urls,
+        )
     set_task_result(state["session_id"], "answer", answer)
     logger.info(
         f"答案输出完成：answer_length={len(answer)}, "
@@ -282,6 +316,8 @@ def produce_answer(state: QueryGraphState) -> dict[str, Any]:
         "answer": answer,
         "image_urls": image_urls,
         "prompt": prompt_text,
+        "retrieval_metadata": retrieval_metadata,
+        "answer_context_docs": documents,
     }
 
 

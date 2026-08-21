@@ -11,11 +11,7 @@ def node_web_search_mcp(state: dict) -> dict:
     session_id = state["session_id"]
     is_stream = state.get("is_stream", False)
     add_running_task(session_id, "node_web_search_mcp", is_stream)
-    result = (
-        {"web_search_docs": []}
-        if state.get("eval_disable_web")
-        else search_web_documents(state)
-    )
+    result = search_web_documents(state)
     if not isinstance(result.get("web_search_docs"), list):
         raise TypeError("web_search_docs 必须为列表")
     add_done_task(session_id, "node_web_search_mcp", is_stream)

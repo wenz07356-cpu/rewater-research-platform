@@ -127,11 +127,54 @@ class RagasEvalTests(unittest.TestCase):
     def test_collector_preserves_order_and_eval_flags(self) -> None:
         case = load_gold_cases(DEFAULT_DATASET_PATH, split="dev")[0]
         graph = _FakeGraph()
-        trace = collect_query(case, run_id="run", graph_app=graph)
+        trace = collect_query(
+            case, run_id="run", graph_app=graph,
+            retrieval_mode="precision",
+        )
         self.assertEqual(trace.retrieved_contexts, ("第二段", "第一段"))
         self.assertEqual(trace.layer_ids["rerank"], ["other", "gold"])
         self.assertTrue(graph.initial_states[0]["eval_disable_history"])
         self.assertTrue(graph.initial_states[0]["eval_disable_web"])
+        self.assertEqual(
+            graph.initial_states[0]["retrieval_config"].mode, "precision"
+        )
+        self.assertFalse(
+            graph.initial_states[0]["retrieval_config"].web_enabled
+        )
+
+        web_graph = _FakeGraph()
+        collect_query(
+            case, run_id="web", graph_app=web_graph,
+            retrieval_mode="precision", web_enabled=True,
+        )
+        self.assertFalse(web_graph.initial_states[0]["eval_disable_web"])
+        self.assertTrue(
+            web_graph.initial_states[0]["retrieval_config"].web_enabled
+        )
+
+    def test_evaluation_snapshot_contains_effective_mode_and_context_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = run_evaluation(
+                dataset_path=DEFAULT_DATASET_PATH, split="dev",
+                output_root=directory, graph_app=_FakeGraph(),
+                skip_ragas=True, limit=1, retrieval_mode="recall",
+            )
+            with (run_dir / "run_results.csv").open(
+                "r", encoding="utf-8", newline=""
+            ) as handle:
+                row = next(csv.DictReader(handle))
+            summary = json.loads(
+                (run_dir / "summary.json").read_text(encoding="utf-8")
+            )
+        snapshot = summary["config_snapshot"]
+        self.assertEqual(snapshot["retrieval_mode"], "recall")
+        self.assertEqual(
+            snapshot["effective_retrieval_config"]["rerank_max_topk"], 12
+        )
+        self.assertEqual(row["final_context_count"], "2")
+        self.assertEqual(
+            summary["overall"]["final_context_count"]["mean"], 2.0
+        )
 
     def test_failed_query_still_writes_row_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

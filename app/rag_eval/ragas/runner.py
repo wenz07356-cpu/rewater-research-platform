@@ -8,11 +8,12 @@ import importlib.metadata
 import subprocess
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.rag.query import config as query_config
+from app.rag.query.retrieval_config import resolve_retrieval_config
 
 from .collector import collect_query
 from .dataset import DEFAULT_DATASET_PATH, GoldCase, load_gold_cases
@@ -42,10 +43,17 @@ def _git_commit() -> str | None:
         return None
 
 
-def _config_snapshot(dataset_path: Path, split: str, statuses: list[str], web: bool) -> dict[str, Any]:
+def _config_snapshot(
+    dataset_path: Path, split: str, statuses: list[str], web: bool,
+    retrieval_mode: str, retrieval_options: dict[str, Any] | None,
+) -> dict[str, Any]:
     from dotenv import load_dotenv
     load_dotenv()
     prompt_path = Path(__file__).with_name("prompt_coding")
+    mode_config = resolve_retrieval_config(retrieval_mode, retrieval_options)
+    effective_config = (
+        replace(mode_config, web_enabled=True) if web else mode_config
+    )
     return {
         "git_commit": _git_commit(), "dataset_path": str(dataset_path),
         "dataset_sha256": _sha256(dataset_path), "split": split,
@@ -57,11 +65,11 @@ def _config_snapshot(dataset_path: Path, split: str, statuses: list[str], web: b
         "embedding_model": __import__("os").getenv("RAGAS_EMBEDDING_MODEL", ""),
         "embedding_provider": __import__("os").getenv("RAGAS_EMBEDDING_PROVIDER", "openai"),
         "prompt_sha256": _sha256(prompt_path) if prompt_path.exists() else None,
-        "search_top_k": query_config.SEARCH_TOP_K, "rrf_k": query_config.RRF_K,
-        "rrf_top_k": query_config.RRF_TOP_K,
-        "rerank_min_top_k": query_config.RERANK_MIN_TOPK,
-        "rerank_max_top_k": query_config.RERANK_MAX_TOPK,
-        "web_enabled": web, "created_at": _now(),
+        "retrieval_mode": retrieval_mode,
+        "retrieval_options": dict(retrieval_options or {}),
+        "mode_strategy_config": mode_config.snapshot(),
+        "effective_retrieval_config": effective_config.snapshot(),
+        "evaluation_web_override": web, "created_at": _now(),
     }
 
 
@@ -71,6 +79,8 @@ def run_evaluation(
     output_root: str | Path | None = None, web_enabled: bool = False,
     evaluator: Any | None = None, graph_app: Any | None = None,
     skip_ragas: bool = False, limit: int | None = None,
+    retrieval_mode: str = "balanced",
+    retrieval_options: dict[str, Any] | None = None,
 ) -> Path:
     """运行一个评估批次并返回本次输出目录。"""
     dataset_path = Path(dataset_path).expanduser().resolve()
@@ -84,7 +94,10 @@ def run_evaluation(
     root = Path(output_root) if output_root else Path(__file__).with_name("runs")
     run_dir = root.expanduser().resolve() / run_id
     results_path = run_dir / "run_results.csv"
-    snapshot = _config_snapshot(dataset_path, split, statuses, web_enabled)
+    snapshot = _config_snapshot(
+        dataset_path, split, statuses, web_enabled,
+        retrieval_mode, retrieval_options,
+    )
     if evaluator is None and not skip_ragas:
         evaluator = RagasEvaluator.from_env()
     rows: list[dict[str, Any]] = []
@@ -101,7 +114,9 @@ def run_evaluation(
         }
         try:
             trace = collect_query(
-                case, run_id=run_id, graph_app=graph_app, web_enabled=web_enabled
+                case, run_id=run_id, graph_app=graph_app,
+                web_enabled=web_enabled, retrieval_mode=retrieval_mode,
+                retrieval_options=retrieval_options,
             )
             id_metrics = compute_layer_metrics(case, trace.layer_ids)
             row.update(
@@ -109,6 +124,7 @@ def run_evaluation(
                 retrieved_contexts_json=json_text(list(trace.retrieved_contexts)),
                 layer_results_json=json_text(trace.layer_ids),
                 id_metrics_json=json_text(id_metrics), _id_metrics=id_metrics,
+                final_context_count=len(trace.retrieved_contexts),
             )
             metric_errors: list[str] = []
             if evaluator is not None:
@@ -136,5 +152,6 @@ def run_evaluation(
         dataset={"path": str(dataset_path), "sha256": snapshot["dataset_sha256"]},
         filters={"split": split, "review_statuses": statuses},
     )
+    summary["config_snapshot"] = snapshot
     write_summary(run_dir / "summary.json", summary)
     return run_dir

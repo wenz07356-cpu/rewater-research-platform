@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-  <title>掌柜智库知识库</title>
+  <title>再生水政策标准知识库</title>
   <style>
     :root{
       --bg:#f3f5f7;
@@ -126,14 +126,15 @@
       align-items:flex-end;
     }
     .avatar{
-      width:34px;height:34px;border-radius:10px;
+      width:34px;height:34px;border-radius:50%;
       background:#e9eef7;
       display:flex;align-items:center;justify-content:center;
-      font-size:14px;
-      color:#3b4a5a;
+      overflow:hidden;
       flex:0 0 auto;
+      box-shadow:0 3px 10px rgba(31,45,61,.16);
     }
     .avatar.bot{background:linear-gradient(135deg, rgba(26,167,255,.18), rgba(91,124,250,.18))}
+    .avatar img{width:100%;height:100%;display:block;object-fit:cover}
     .bubble{
       max-width:min(720px, 76%);
       display:inline-block;
@@ -273,6 +274,13 @@
       background:#f7f9fc;
       color:#3b4a5a;
     }
+    .retrieval-panel{padding:10px 14px;border-top:1px solid var(--border);background:#fff;font-size:12px}
+    .retrieval-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
+    .retrieval-row label{color:var(--muted)}
+    .retrieval-row select,.retrieval-row input{max-width:220px;padding:6px;border:1px solid var(--border);border-radius:8px}
+    .retrieval-meta{margin-top:10px;padding:8px;border-radius:8px;background:#f5f8fc;color:#526170;font-size:12px;line-height:1.6}
+    .retry-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.retry-actions button{border:1px solid var(--border);background:#fff;border-radius:7px;padding:4px 8px;cursor:pointer}
+    @media(max-width:640px){.retrieval-row>*{max-width:100%}}
   </style>
 </head>
 <body>
@@ -281,11 +289,14 @@
       <div class="brand">
         <div class="logo"></div>
         <div class="title">
-          <strong>掌柜智库知识库</strong>
-          <span id="subTitle">在线 · 可查询知识库与联网信息</span>
+          <strong>再生水政策标准知识库</strong>
+          <span id="subTitle">在线 · 可查询再生水政策、标准与联网信息</span>
         </div>
       </div>
       <div class="top-actions">
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;color:var(--muted);">
+          <input type="checkbox" id="webEnabled" checked> 联网搜索
+        </label>
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;color:var(--muted);margin-right:10px;">
           <input type="checkbox" id="streamToggle" checked> 流式输出
         </label>
@@ -297,11 +308,29 @@
     <div class="chat" id="chat">
       <div class="dayline">今天</div>
       <div class="msg bot">
-        <div class="avatar bot">掌柜智库</div>
+        <div class="avatar bot"><img src="/query-assets/avatar-einstein.png" alt="知识库助手头像"></div>
         <div>
-          <div class="bubble">你好，我是掌柜智库知识库客服。你可以直接提问，我会在“阶段进度”里展示处理过程。</div>
-          <div class="meta">提示：可以问“如何使用万用表测量电压？”</div>
+          <div class="bubble">你好，我是再生水政策标准知识库助手。你可以咨询再生水利用、管理政策、技术标准等问题，我会结合知识库资料为你解答。</div>
+          <div class="meta">提示：可以问“北京市再生水利用有哪些管理要求？”</div>
         </div>
+      </div>
+    </div>
+
+    <div class="retrieval-panel">
+      <div class="retrieval-row">
+        <label>检索模式 <select id="retrievalMode">
+          <option value="balanced">均衡 · 速度与覆盖平衡</option>
+          <option value="precision">精确回答 · 材料更少、更聚焦</option>
+          <option value="recall">全面检索 · 覆盖更多、响应更慢</option>
+          <option value="custom">自定义</option>
+        </select></label>
+      </div>
+      <div class="retrieval-row">
+        <label>候选数 <input id="candidateTopK" type="number" min="5" max="25" value="10"></label>
+        <label>参考材料 <input id="maxReferences" type="number" min="1" max="12" value="6"></label>
+        <label>匹配 <select id="matchingPreference"><option value="keyword">关键词</option><option value="balanced" selected>均衡</option><option value="semantic">语义</option></select></label>
+        <label><input type="checkbox" id="hydeEnabled" checked> HyDE</label>
+        <label>HyDE 影响 <select id="hydeInfluence"><option value="low">低</option><option value="medium" selected>中</option><option value="high">高</option></select></label>
       </div>
     </div>
 
@@ -321,6 +350,26 @@
     const apiPill = document.getElementById('apiPill');
     const btnClear = document.getElementById('btnClear');
     const streamToggle = document.getElementById('streamToggle');
+    const retrievalMode = document.getElementById('retrievalMode');
+    const candidateTopK = document.getElementById('candidateTopK');
+    const maxReferences = document.getElementById('maxReferences');
+    const matchingPreference = document.getElementById('matchingPreference');
+    const hydeEnabled = document.getElementById('hydeEnabled');
+    const hydeInfluence = document.getElementById('hydeInfluence');
+    const modeFields = [
+      candidateTopK, maxReferences, matchingPreference, hydeEnabled, hydeInfluence
+    ];
+    const presetDisplay = {
+      balanced: {candidateTopK:10, maxReferences:6, matchingPreference:'balanced', hydeEnabled:true, hydeInfluence:'medium'},
+      precision:{candidateTopK:6, maxReferences:3, matchingPreference:'balanced', hydeEnabled:true, hydeInfluence:'low'},
+      recall:   {candidateTopK:20, maxReferences:12, matchingPreference:'balanced', hydeEnabled:true, hydeInfluence:'high'}
+    };
+    let customDraft = {
+      candidateTopK:10, maxReferences:6, matchingPreference:'balanced',
+      hydeEnabled:true, hydeInfluence:'medium'
+    };
+    let previousRetrievalMode = retrievalMode.value;
+    let lastQueryText = '';
 
     // Session ID Logic
     let sessionId = localStorage.getItem('kb_session_id');
@@ -590,7 +639,7 @@
             <div class="bubble">${escapeHtml(text)}</div>
             <div class="meta">${nowTime()}</div>
           </div>
-          <div class="avatar">我</div>
+          <div class="avatar"><img src="/query-assets/avatar-tesla.png" alt="用户头像"></div>
         </div>
       `;
       chatEl.insertAdjacentHTML('beforeend', html);
@@ -604,18 +653,18 @@
             <div class="bubble">${escapeHtml(text)}</div>
             <div class="meta">${formatTime(ts)}</div>
           </div>
-          <div class="avatar">我</div>
+          <div class="avatar"><img src="/query-assets/avatar-tesla.png" alt="用户头像"></div>
         </div>
       `;
       chatEl.insertAdjacentHTML('beforeend', html);
       scrollToBottom();
     }
 
-    function addBotMsgWithTime(text, ts, imageUrls){
+    function addBotMsgWithTime(text, ts, imageUrls, retrievalMetadata){
       const id = 'bot-his-' + Math.random().toString(36).slice(2);
       const html = `
         <div class="msg bot" id="${id}">
-          <div class="avatar bot">掌柜智库</div>
+          <div class="avatar bot"><img src="/query-assets/avatar-einstein.png" alt="知识库助手头像"></div>
           <div>
             <div class="bubble"><div class="answer"></div></div>
             <div class="meta">${formatTime(ts)}</div>
@@ -627,6 +676,7 @@
       if(el){
         const answerEl = el.querySelector('.answer');
         renderAnswerWithImages(answerEl, text || '', imageUrls || []);
+        renderRetrievalMetadata(el, retrievalMetadata);
       }
       scrollToBottom();
     }
@@ -635,7 +685,7 @@
       const id = 'bot-' + Math.random().toString(36).slice(2);
       const html = `
         <div class="msg bot" id="${id}">
-          <div class="avatar bot">掌柜智库</div>
+          <div class="avatar bot"><img src="/query-assets/avatar-einstein.png" alt="知识库助手头像"></div>
           <div style="min-width: 180px;">
             <div class="bubble">
               <span class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
@@ -686,7 +736,25 @@
       }
     }
 
-    function finalizeBotAnswer(botMsgEl, answer, error, imageUrls){
+    function renderRetrievalMetadata(botMsgEl, metadata){
+      if(!metadata) return;
+      const bubble = botMsgEl.querySelector('.bubble');
+      const old = bubble.querySelector('.retrieval-meta');
+      if(old) old.remove();
+      const counts = metadata.counts || {};
+      const el = document.createElement('div');
+      el.className = 'retrieval-meta';
+      el.textContent = `${metadata.mode_label || metadata.mode} · 本地候选 ${counts.local_fused || 0} · Web ${counts.web || 0} · 最终材料 ${counts.final_context || 0}`;
+      if((metadata.degradations || []).length) el.appendChild(document.createTextNode(`\n降级：${metadata.degradations.join('、')}`));
+      const actions = document.createElement('div'); actions.className = 'retry-actions';
+      [['precision','精确模式重试'],['recall','全面模式重试']].forEach(([mode,label]) => {
+        const button = document.createElement('button'); button.textContent = label;
+        button.onclick = () => retryLastQuery(mode); actions.appendChild(button);
+      });
+      el.appendChild(actions); bubble.appendChild(el);
+    }
+
+    function finalizeBotAnswer(botMsgEl, answer, error, imageUrls, retrievalMetadata){
       const bubble = botMsgEl.querySelector('.bubble');
       const progress = botMsgEl.querySelector('details.progress');
       const err = (error || '').trim();
@@ -717,6 +785,7 @@
       bubble.appendChild(answerEl);
       renderAnswerWithImages(answerEl, answer || '', imageUrls || []);
       if(progressEl) bubble.appendChild(progressEl);
+      renderRetrievalMetadata(botMsgEl, retrievalMetadata);
     }
 
     async function apiHealth(){
@@ -731,11 +800,13 @@
 
     async function loadHistory(){
       try{
-        const res = await fetch(`${API_BASE}/history/${sessionId}`);
+        const res = await fetch(`${API_BASE}/history/${sessionId}?limit=50`);
         if(!res.ok) return;
         const data = await res.json();
         const items = Array.isArray(data.items) ? data.items : [];
         if(items.length === 0) return;
+        const latestUser = items.find(item => item.role === 'user');
+        if(latestUser) lastQueryText = latestUser.text || '';
         // 保留首条欢迎消息，其余先清空再渲染历史
         const nodes = Array.from(chatEl.querySelectorAll('.msg'));
         for(let i=1;i<nodes.length;i++) nodes[i].remove();
@@ -744,11 +815,63 @@
           if(item.role === 'user'){
             addUserMsgWithTime(item.text || '', item.ts);
           }else{
-            addBotMsgWithTime(item.text || '', item.ts, item.image_urls || []);
+            addBotMsgWithTime(item.text || '', item.ts, item.image_urls || [], item.retrieval_metadata);
           }
         }
         scrollToBottom();
       }catch(_){}
+    }
+
+    function readModeFields(){
+      return {
+        candidateTopK:Number(candidateTopK.value),
+        maxReferences:Number(maxReferences.value),
+        matchingPreference:matchingPreference.value,
+        hydeEnabled:hydeEnabled.checked,
+        hydeInfluence:hydeInfluence.value
+      };
+    }
+    function writeModeFields(values){
+      candidateTopK.value = values.candidateTopK;
+      maxReferences.value = values.maxReferences;
+      matchingPreference.value = values.matchingPreference;
+      hydeEnabled.checked = values.hydeEnabled;
+      hydeInfluence.value = values.hydeInfluence;
+    }
+    function syncModeFields(){
+      const mode = retrievalMode.value;
+      const isCustom = mode === 'custom';
+      if(previousRetrievalMode === 'custom' && !isCustom){
+        customDraft = readModeFields();
+      }
+      writeModeFields(isCustom ? customDraft : presetDisplay[mode]);
+      for(const field of modeFields) field.disabled = !isCustom;
+      hydeInfluence.disabled = !isCustom || !hydeEnabled.checked;
+      previousRetrievalMode = mode;
+    }
+    function selectRetrievalMode(mode){
+      retrievalMode.value = mode;
+      syncModeFields();
+    }
+
+    function currentRequestOptions(){
+      const mode = retrievalMode.value;
+      return {
+        retrieval_mode: mode,
+        web_enabled: document.getElementById('webEnabled').checked,
+        retrieval_options: mode === 'custom' ? {
+          candidate_top_k: Number(candidateTopK.value),
+          max_reference_count: Number(maxReferences.value),
+          matching_preference: matchingPreference.value,
+          hyde_enabled: hydeEnabled.checked,
+          hyde_influence: hydeInfluence.value
+        } : null
+      };
+    }
+    function retryLastQuery(mode){
+      if(!lastQueryText || sendBtn.disabled) return;
+      selectRetrievalMode(mode);
+      inputEl.value = lastQueryText; onSend();
     }
 
     async function submitQuery(text){
@@ -759,7 +882,8 @@
         body: JSON.stringify({
           query: text,
           session_id: sessionId,
-          is_stream: isStream
+          is_stream: isStream,
+          ...currentRequestOptions()
         })
       });
       if(!res.ok){
@@ -796,8 +920,10 @@
 
     async function onSend(){
       console.log('[perf] A onSend start', performance.now());
+      if(sendBtn.disabled) return;
       const text = (inputEl.value || '').trim();
       if(!text) return;
+      lastQueryText = text;
       inputEl.value = '';
       addUserMsg(text);
       const botMsgEl = addBotMsgSkeleton();
@@ -816,7 +942,7 @@
           // 非流式：直接拿到结果
           // data: { session_id, answer, done_list, error, message }
           renderProgress(botMsgEl, data.done_list || [], [], 'completed');
-          finalizeBotAnswer(botMsgEl, data.answer, data.error, data.image_urls || []);
+          finalizeBotAnswer(botMsgEl, data.answer, data.error, data.image_urls || [], data.retrieval_metadata);
           sendBtn.disabled = false;
           return;
         }
@@ -875,6 +1001,7 @@
             // 流式 delta 可能不包含“【图片】/图片列表”，最终包的 d.answer 才是完整答案；优先使用 d.answer
             const finalText = (d && typeof d.answer === 'string' && d.answer.trim().length > 0) ? d.answer : (rawAnswerText || answerEl.textContent || '');
             renderAnswerWithImages(answerEl, finalText, d.image_urls || []);
+            renderRetrievalMetadata(botMsgEl, d.retrieval_metadata);
           }catch(_){}
           es.close();
           sendBtn.disabled = false;
@@ -891,6 +1018,7 @@
             const d = JSON.parse(e.data || '{}');
             const finalText = (d && typeof d.answer === 'string' && d.answer.trim().length > 0) ? d.answer : (rawAnswerText || answerEl.textContent || '');
             renderAnswerWithImages(answerEl, finalText, d.image_urls || []);
+            renderRetrievalMetadata(botMsgEl, d.retrieval_metadata);
           }catch(_){}
           es.close();
           sendBtn.disabled = false;
@@ -904,7 +1032,8 @@
           if(progress) progress.removeAttribute('open');
 
           try{
-            const msg = e && e.data ? (JSON.parse(e.data).error || 'SSE 连接中断/失败') : 'SSE 连接中断/失败';
+            const payload = e && e.data ? JSON.parse(e.data) : {};
+            const msg = payload.error || payload.message || 'SSE 连接中断/失败';
             rawAnswerText += `\n\n（错误：${msg}）`;
             renderAnswerWithImages(answerEl, rawAnswerText, []);
           }catch(_){
@@ -950,6 +1079,12 @@
       for(let i=1;i<nodes.length;i++) nodes[i].remove();
       scrollToBottom();
     });
+
+    retrievalMode.addEventListener('change', syncModeFields);
+    hydeEnabled.addEventListener('change', () => {
+      hydeInfluence.disabled = !hydeEnabled.checked;
+    });
+    syncModeFields();
 
     apiHealth();
     setInterval(apiHealth, 5000);

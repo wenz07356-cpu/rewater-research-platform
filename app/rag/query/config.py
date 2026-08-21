@@ -1,7 +1,7 @@
 """查询链路的集中配置常量。"""
 
 DOCUMENT_TYPES = ("政策", "标准", "规划", "技术文件", "其他")
-HARD_FILTER_FIELDS = ("file_titles", "region_names", "document_types")
+HARD_FILTER_FIELDS = ("region_names", "document_types")
 
 QUERY_HISTORY_MESSAGE_LIMIT = 6
 QUERY_HISTORY_MAX_CHARS = 4000

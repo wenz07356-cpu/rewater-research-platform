@@ -1,0 +1,195 @@
+## 提示词二：基于当前金标题库实现 Ragas 评估体系
+
+```text
+你是本项目的高级 Python、LangGraph 与 RAG 评估工程师。请直接在当前仓库中实现一套可运行、可追溯、可重复的离线 RAG 评估体系。
+
+唯一金标题库：app/rag_eval/ragas/rag_gold_questions.csv
+
+不要查找、恢复、参考或兼容已经删除的旧评估代码、旧问题集、旧演示数据或 Git 历史实现。不要假设旧接口仍存在。仅依据当前 CSV、当前项目依赖和当前真实查询链路建立新实现。
+
+【当前 CSV 基线】
+开始编码前必须实际解析文件并核对：
+- 固定 9 列：case_id,user_input,reference,gold_contexts_json,must_hit_chunk_ids_json,answerable,split,review_status,notes
+- 当前 20 条，case_id 为 rewater_0001 至 rewater_0020。
+- dev 16 条、test 4 条。
+- 当前全部 answerable=true、review_status=draft。
+- notes 中有 2 条“多文档题”。
+- gold_contexts_json 是证据对象数组，每项包含 chunk_id、file_title、section_title、content。
+- must_hit_chunk_ids_json 是核心 chunk ID 数组，必须是 gold chunk ID 的子集。
+
+上述数量只用于确认当前文件被正确读取，不得硬编码为长期规则。实现须支持以后增加 reviewed 和 answerable=false 样本。
+
+【目标】
+1. 完整执行项目真实 RAG 查询链路，取得最终 response。
+2. 采集 embedding_chunks、hyde_embedding_chunks、rrf_chunks、reranked_docs 四层真实结果。
+3. 从 reranked_docs 按原顺序生成 retrieved_contexts。
+4. 使用 Ragas 计算 Faithfulness、Answer Relevancy、Context Precision、Context Recall、Answer Correctness。
+5. 对四层分别计算 ID Precision、ID Recall、Must-hit Rate。
+6. 输出逐题 run_results.csv 和批次 summary.json。
+7. 提供自动化测试及需显式启用的真实冒烟入口。
+
+【实施原则】
+1. 先调查当前仓库，只阅读完成任务所需的依赖配置、真实查询入口及直接依赖、查询 state、模型和知识库文档结构；不要把已删除的评估文件作为前置条件。
+2. 检查并保护用户现有改动，不覆盖、撤销或格式化无关内容。
+3. 不复制简化版 RAG，不改变生产查询默认行为，不向正式知识库插入评估文档。
+4. 若实际 state 字段名与本提示词不同，以真实代码为准，并在适配层建立明确映射；不得静默丢失某一检索层。
+5. 首次修改前简要报告真实查询入口、可采集字段、缺口、拟改文件和实施顺序；随后继续完成，除非出现必须由用户决定的范围变化。
+
+【数据加载契约】
+默认路径必须是 app/rag_eval/ragas/rag_gold_questions.csv。
+
+加载器必须：
+1. 使用 csv 标准库或可靠 CSV 库解析 RFC 4180，禁止按逗号 split。
+2. 用 json.loads 解析两个 JSON 字段。
+3. 严格校验列名和顺序恰好等于固定 9 列。
+4. 校验 case_id 非空、唯一，并保留 CSV 顺序。
+5. 严格解析 answerable，只接受规范 true/false；禁止 bool("false")。
+6. split 只能是 dev/test；review_status 只能是 draft/reviewed/rejected。
+7. gold context 每项必须恰好含 chunk_id、file_title、section_title、content，且均为非空字符串。
+8. ID 转为非空字符串、去除首尾空白、按首次出现顺序去重。
+9. must-hit 必须是 gold ID 子集。
+10. answerable=true 时 reference 非空且至少有一个 gold context。
+11. answerable=false 时 gold 和 must-hit 均须为空数组，reference 应说明资料不足或所需补充信息。
+12. 错误须包含行号、case_id（可确定时）、字段名和具体原因。
+
+过滤规则：
+- 支持 split=dev、test、all。
+- 支持一个或多个 review_status 以及 all。
+- 为使当前题库可运行，默认选择 draft 和 reviewed，排除 rejected。
+- 可显式只跑 reviewed；过滤后为 0 条时清晰报错，不生成空成功报告。
+- 开发和冒烟默认只跑 dev；test 必须显式指定，避免测试集泄漏。
+
+【真实查询与采集】
+1. 每题调用当前真实查询图或正式业务入口并执行到最终答案节点。
+2. response 只能来自本次最终 state 的真实 answer。
+3. 四层结果只能来自本次 state；不得从日志、旧报告或金标证据反推。
+4. retrieved_contexts 只能由 reranked_docs 的 content 按当前排名提取，不去重、不重排。
+5. 各层 chunk ID 去重但保留首次顺序；缺失 ID 应记录数据质量错误，禁止伪造。
+6. layer_results_json 固定为：{"embedding":["..."],"hyde":["..."],"rrf":["..."],"rerank":["..."]}。
+7. 使用含 eval 前缀并结合 run_id、case_id 的唯一 session_id。
+8. 评估不得写入正常用户会话历史。若答案节点会写 Mongo 或其他历史记录，通过局部、显式、可测试的评估配置隔离副作用，不改变生产默认值。
+9. 默认关闭实时 Web 检索；可保留显式真实 Web 模式并记录到配置快照。
+10. 单题异常必须写入结果行；结果应增量、原子保存，后续失败不能丢失已完成结果。
+
+【Ragas 映射】
+- user_input = CSV.user_input
+- reference = CSV.reference
+- response = 真实查询最终 answer
+- retrieved_contexts = 真实 reranked_docs 的 content 列表
+
+禁止用 reference 代替 response、用 gold_contexts_json 代替 retrieved_contexts、另行生成“优化答案”、拼接上下文而丢失边界和排名，或用 0 伪装失败/缺失/不适用分数。
+
+gold_contexts_json 只用于 reference 证据追溯、提取 gold ID、确定性指标和审计。
+
+【Ragas 版本与评审模型】
+1. 检查当前依赖和已安装包；若缺少 Ragas，使用项目现有依赖工作流添加稳定的 0.4.x 精确版本并更新锁文件。
+2. 只依据该版本官方文档或已安装包公开 API，不混用 legacy API、旧博客或旧小写 metric 单例。
+3. 用最小导入和单样本调用确认五项指标的实际类名、参数、同步/异步接口和字段要求，特别核对 Answer Relevancy 类名及 Answer Relevancy、Answer Correctness 的 Embeddings 需求。
+4. 显式配置 evaluator LLM 和 evaluator Embeddings，至少支持 RAGAS_EVALUATOR_MODEL、RAGAS_EMBEDDING_MODEL，并可复用 OPENAI_BASE_URL、OPENAI_API_KEY；端点不同则增加语义清晰的专用空占位变量。
+5. 分别验证聊天与 Embeddings 端点，不得假设同一端点均支持。
+6. 不打印、保存或提交密钥、Authorization header 和敏感环境变量。
+7. 设置合理 timeout、有限重试、并发上限和限流。
+8. 用当前中文题库执行最小样本验证；语言适配仅使用该版本公开 API。
+
+【确定性 ID 指标】
+从 gold_contexts_json 提取 gold_ids，从 must_hit_chunk_ids_json 提取 must_hit_ids。对 embedding、hyde、rrf、rerank 分别计算：
+- ID Precision = 命中 gold 的 retrieved ID 数 / 去重后的 retrieved ID 数
+- ID Recall = 命中 gold 的 retrieved ID 数 / gold ID 数
+- Must-hit Rate = 命中 must-hit 的 retrieved ID 数 / must-hit ID 数
+
+每层保存 retrieved_ids、gold_ids、must_hit_ids、hit_ids、各集合数量及三个分数。
+
+空集合语义：
+- answerable=false 或 gold 为空：三项为 null，不参与聚合。
+- gold 非空、retrieved 为空：Precision=null，Recall=0；must-hit 非空时 Must-hit Rate=0。
+- must-hit 为空但 gold 非空：Must-hit Rate=null。
+- 中间计算保留原始精度，仅展示时格式化。
+
+【不可回答题前向兼容】
+当前没有 answerable=false，但实现须支持未来样本：
+1. 不参与 ID 指标聚合。
+2. 单独计算 abstention_correct，判断系统是否明确说明资料不足、没有编造事实，并在必要时合理澄清。
+3. 使用独立、可解释、可测试的规则或评审器，不能用五个 Ragas 分数代替。
+4. 没有不可回答样本时，有效样本数为 0、聚合值为 null。
+
+【输出】
+默认目录：app/rag_eval/ragas/runs/<run_id>/
+
+run_results.csv 固定列头：
+run_id,case_id,response,retrieved_contexts_json,layer_results_json,faithfulness,answer_relevancy,context_precision,context_recall,answer_correctness,id_metrics_json,latency_ms,error_message,config_snapshot_json
+
+要求：
+1. 每个输入样本恰好一行并保持顺序，失败题也保留。
+2. JSON 字段先 json.dumps(..., ensure_ascii=False)，再交给 CSV writer 转义。
+3. Ragas 失败或不适用时为空/null，并在 error_message 标明指标和原因。
+4. config_snapshot_json 至少记录数据集路径及 SHA-256、split、状态过滤器、Ragas 版本、回答/评审/Embedding 模型、Prompt 或实现版本标识、检索 top-k、RRF/Rerank 参数、Web 模式、运行时间及可获取时的 Git commit；不得包含密钥或敏感值。
+5. 使用 UTF-8 和可靠 CSV writer，保证中文、逗号、引号、换行可无损回读。
+
+summary.json 至少包含：
+1. run_id、开始/结束时间、数据集路径与哈希、过滤条件、样本/成功/失败数。
+2. 五项 Ragas 指标的有效样本数、均值、中位数、P10。
+3. 四层三项 ID 指标的有效样本数、均值、中位数、P10。
+4. abstention accuracy；无样本时 count=0、value=null。
+5. 按 split、answerable 分组的统计。
+6. notes 精确等于“多文档题”的样本数、成功数和指标统计。
+7. 缺失、不适用和失败值的聚合策略，以及错误类型计数。
+
+【代码职责】
+在 app/rag_eval/ragas/ 下按需分离：
+- dataset：读取、解析、校验、过滤、数据模型；
+- collector/runner：调用真实查询链路、隔离副作用、采集 state；
+- metrics：Ragas、ID 指标、不可回答评估；
+- report：增量落盘和汇总；
+- cli 或 tester：最小公开入口。
+
+不复制生产算法；路径使用 pathlib；公开函数提供类型标注和必要文档字符串；日志默认只记 run_id、case_id、阶段、数量、耗时和错误摘要；不引入数据库、Web UI、图表平台或首版无关抽象。
+
+【自动化测试】
+至少覆盖：
+1. 当前 CSV 为20条、dev/test=16/4、可识别2条多文档题。
+2. 嵌套 JSON、中文逗号、引号和长文本无损回读。
+3. 固定9列的缺失、增加、改名、换序均报错。
+4. 重复 case_id、非法 JSON/布尔值/split/review_status。
+5. gold context 缺字段或空字段、must-hit 非 gold 子集。
+6. answerable=true 缺 reference/gold；answerable=false 存在 gold/must-hit。
+7. 默认可加载 draft/dev；仅 reviewed 对当前文件给出0样本错误；默认冒烟不运行test。
+8. 四层 ID 去重保序、公式和空集合语义正确。
+9. retrieved_contexts 与 reranked_docs 顺序及内容一致。
+10. 单题失败仍有结果行，某一 Ragas 指标失败不会伪造0分。
+11. CSV 无损回读，summary 的有效样本数、P10、分组和多文档统计正确。
+12. 评估不写正常用户历史，生产默认行为不变。
+
+单元测试 mock 外部 LLM、Embedding、Milvus、Mongo 和 Web。真实冒烟必须显式启用，默认不进入快速测试。
+
+【验证顺序】
+1. 独立加载并校验当前 CSV，输出简短统计。
+2. 完成数据模型、校验器、ID 指标及其测试。
+3. 接入真实查询链路，验证四层 state 和 retrieved_contexts。
+4. 确认当前 Ragas 版本五项指标 API。
+5. 使用2至3条 dev/draft 样本执行显式真实冒烟，不使用test。
+6. 验证结果可追溯到问题、参考答案、真实回答、真实上下文、四层 ID 和 gold ID。
+7. 运行相关完整测试并确认只修改任务所需文件。
+
+真实外部服务不可用时，仍完成本地实现和单元测试，明确列出缺少的变量、服务或权限；不得伪造冒烟成功、分数或检索结果。
+
+【完成标准】
+- 唯一数据源为 app/rag_eval/ragas/rag_gold_questions.csv，默认能加载当前 draft/dev。
+- 9列和嵌套 JSON 契约被严格校验。
+- 执行完整真实 RAG 链路，response 和 retrieved_contexts 来源正确。
+- 四层 ID 和三项确定性指标可逐题回查。
+- 五项 Ragas 使用锁定版本真实 API。
+- 两个输出可稳定生成和回读，失败不被丢弃或伪装成0。
+- test 默认不参与开发冒烟。
+- 不污染生产历史和正式知识库。
+- 自动化测试通过；外部限制被诚实说明。
+- 未参考、恢复或兼容已删除的旧评估代码和旧问题集。
+
+完成后汇报：
+1. Ragas 精确版本、五项指标类和调用方式。
+2. 实际新增与修改的文件。
+3. 当前 CSV 加载统计和过滤行为。
+4. 金标到 Ragas、四层检索和 ID 指标的映射。
+5. 查询采集及历史副作用隔离方式。
+6. 单元测试与真实冒烟结果，明确区分 mock 与真实调用。
+7. 未解决限制和所需外部配置。
+```

@@ -1,7 +1,7 @@
 """Query HTTP 请求、响应与公开检索元数据模型。"""
 
 from enum import Enum
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -108,6 +108,44 @@ class QueryResponse(BaseModel):
     done_list: list[str] = Field(default_factory=list)
     image_urls: list[str] = Field(default_factory=list)
     retrieval_metadata: RetrievalMetadata | None = None
+
+
+class RetrievalRequest(BaseModel):
+    """DeepAgent 证据检索请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    top_k: int = Field(default=6, ge=1, le=6, strict=True)
+
+    @field_validator("query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        value = " ".join(value.split()).strip()
+        if not value:
+            raise ValueError("query 不能为空")
+        return value
+
+
+class RetrievalChunk(BaseModel):
+    """返回给 DeepAgent 的单条知识库证据。"""
+
+    chunk_id: str
+    document_id: str
+    document_name: str
+    section_title: str = ""
+    content: str
+    score: float
+
+
+class RetrievalResponse(BaseModel):
+    """DeepAgent 证据检索响应。"""
+
+    status: Literal["ok", "empty", "needs_clarification"]
+    request_id: str
+    query: str
+    clarification_question: str = ""
+    chunks: list[RetrievalChunk] = Field(default_factory=list)
 
 
 class HistoryItem(BaseModel):

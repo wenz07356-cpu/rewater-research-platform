@@ -23,6 +23,8 @@ from app.api.schemas.query import (
     HistoryResponse,
     QueryRequest,
     QueryResponse,
+    RetrievalRequest,
+    RetrievalResponse,
     RetrievalMetadata,
 )
 from app.shared.runtime.logger import PROJECT_ROOT, logger
@@ -32,6 +34,10 @@ from app.process.query.agent.main_graph import query_app as query_graph_app
 from app.process.query.agent.state import create_query_default_state
 from app.rag.query.retrieval_config import (
     EffectiveRetrievalConfig, build_retrieval_metadata, resolve_retrieval_config,
+)
+from app.rag.query.evidence_retrieval_service import (
+    build_retrieval_chunks,
+    retrieve_evidence,
 )
 from app.shared.utils.sse_utils import SSEEvent, create_sse_queue, push_to_session, sse_generator
 from app.shared.utils.task_utils import (
@@ -315,6 +321,7 @@ def index():
         "routes": {
             "html": "/html",
             "query": "/query",
+            "retrieval": "/retrieval",
             "stream": "/stream/{session_id}",
             "history": "/history/{session_id}",
         },
@@ -364,6 +371,34 @@ async def query(request: QueryRequest, background_tasks: BackgroundTasks):
         )
     return execute_query(
         query=request.query, session_id=final_session_id, prepared=prepared
+    )
+
+
+@app.post("/retrieval", response_model=RetrievalResponse)
+def retrieval(request: RetrievalRequest) -> RetrievalResponse:
+    """为 DeepAgent 返回内部知识库的精排证据，不生成答案。"""
+    request_id = str(uuid.uuid4())
+    state = retrieve_evidence(request.query, request_id)
+
+    clarification_question = str(state.get("answer") or "").strip()
+    if clarification_question:
+        return RetrievalResponse(
+            status="needs_clarification",
+            request_id=request_id,
+            query=request.query,
+            clarification_question=clarification_question,
+            chunks=[],
+        )
+
+    chunks = build_retrieval_chunks(
+        state.get("reranked_docs") or [],
+        request.top_k,
+    )
+    return RetrievalResponse(
+        status="ok" if chunks else "empty",
+        request_id=request_id,
+        query=request.query,
+        chunks=chunks,
     )
 
 

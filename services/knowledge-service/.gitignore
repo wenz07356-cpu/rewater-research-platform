@@ -39,6 +39,7 @@ pip-delete-this-directory.txt
 
 logs/
 app/rag_eval/ragas/runs/
+docs/
 
 /doc/
 

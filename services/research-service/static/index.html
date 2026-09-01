@@ -299,19 +299,7 @@
 // ============================================================
 // Configuration
 // ============================================================
-function resolveApiBase() {
-  if (window.API_BASE_URL) {
-    return window.API_BASE_URL.replace(/\/$/, '');
-  }
-
-  if (window.location.protocol === 'file:') {
-    return 'http://127.0.0.1:8010';
-  }
-
-  return window.location.origin;
-}
-
-const API = resolveApiBase() + '/api/v1';
+const API = '/api/research/v1';
 const DEBUG_ENABLED = new URLSearchParams(window.location.search).get('debug') === '1';
 
 // ============================================================

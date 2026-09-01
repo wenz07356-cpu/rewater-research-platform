@@ -49,6 +49,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get("/health")
+def health():
+    """返回导入服务的轻量健康状态，不触发外部模型或基础设施调用。"""
+    return {
+        "ok": True,
+        "app": settings.import_app_name,
+        "env": settings.app_env,
+        "module": "import",
+    }
+
+
 @app.get("/html")
 def import_html():
     """

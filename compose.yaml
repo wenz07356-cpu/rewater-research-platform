@@ -1,0 +1,158 @@
+name: rewater-research-platform
+
+x-knowledge-environment: &knowledge-environment
+  APP_ENV: ${ENVIRONMENT:-local}
+  APP_HOST: 0.0.0.0
+  PROJECT_ROOT: /app
+  CORS_ORIGINS: "*"
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-qwen-plus}
+  LLM_DEFAULT_TEMPERATURE: "0.1"
+  VL_MODEL: qwen-vl-max
+  MCP_DASHSCOPE_BASE_URL: https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp
+  BGE_M3_PATH: ${BGE_M3_PATH:-/app/models/bge-m3}
+  BGE_M3: BAAI/bge-m3
+  BGE_DEVICE: ${BGE_DEVICE:-cpu}
+  BGE_FP16: "False"
+  BGE_RERANKER_LARGE: ${BGE_RERANKER_LARGE:-/app/models/bge-reranker-v2-m3}
+  BGE_RERANKER_DEVICE: ${BGE_RERANKER_DEVICE:-cpu}
+  BGE_RERANKER_FP16: "False"
+  NO_PROXY: ${NO_PROXY:-host.docker.internal,127.0.0.1,localhost}
+  MILVUS_URL: ${MILVUS_URL}
+  CHUNKS_COLLECTION: ${CHUNKS_COLLECTION:-kb_chunks_v2}
+  ENTITY_NAME_COLLECTION: ${ENTITY_NAME_COLLECTION:-kb_entities}
+  ITEM_NAME_COLLECTION: ${ITEM_NAME_COLLECTION:-kb_item_names}
+  MONGO_URL: ${MONGO_URL}
+  MONGO_DB_NAME: ${MONGO_DB_NAME:-kb002}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+  MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-zhishiku}
+  MINIO_IMG_DIR: ${MINIO_IMG_DIR:-/upload-images}
+  MINIO_SECURE: ${MINIO_SECURE:-False}
+  MINERU_BASE_URL: ${MINERU_BASE_URL:-}
+  MINERU_API_TOKEN: ${MINERU_API_TOKEN:-}
+
+x-research-environment: &research-environment
+  ENVIRONMENT: ${ENVIRONMENT:-local}
+  NO_PROXY: ${NO_PROXY:-host.docker.internal,127.0.0.1,localhost}
+  MONGODB_URI: ${MONGODB_URI}
+  MONGODB_DATABASE: ${MONGODB_DATABASE:-deep_research}
+  REDIS_URL: ${REDIS_URL}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  LLM_MODEL_NAME: ${LLM_MODEL_NAME:-gpt-4.1-mini}
+  LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+  OPENAI_API_BASE: ${OPENAI_BASE_URL:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  DEEPSEEK_API_BASE: ${DEEPSEEK_API_BASE:-}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+  REPORT_MAX_SECTIONS: ${REPORT_MAX_SECTIONS:-4}
+  ENABLE_KNOWLEDGE_SERVICE: ${ENABLE_KNOWLEDGE_SERVICE:-true}
+  KNOWLEDGE_SERVICE_BASE_URL: http://knowledge-query:8001
+  KNOWLEDGE_SERVICE_TOP_K: ${KNOWLEDGE_SERVICE_TOP_K:-6}
+
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${PLATFORM_PORT:-8080}:80"
+    volumes:
+      - ./deploy/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/gateway/html:/usr/share/nginx/html:ro
+    depends_on:
+      knowledge-import:
+        condition: service_healthy
+      knowledge-query:
+        condition: service_healthy
+      research-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  knowledge-import:
+    build:
+      context: ./services/knowledge-service
+    restart: unless-stopped
+    command: ["uvicorn", "app.api.http.import_server:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *knowledge-environment
+      IMPORT_APP_PORT: "8000"
+    volumes:
+      - type: bind
+        source: ${BGE_M3_HOST_PATH:-./models/bge-m3}
+        target: /app/models/bge-m3
+        read_only: true
+      - type: bind
+        source: ${BGE_RERANKER_HOST_PATH:-./models/bge-reranker-v2-m3}
+        target: /app/models/bge-reranker-v2-m3
+        read_only: true
+      - knowledge-data:/rewater-agent-data-base
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  knowledge-query:
+    build:
+      context: ./services/knowledge-service
+    restart: unless-stopped
+    command: ["uvicorn", "app.api.http.query_server:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      <<: *knowledge-environment
+      QUERY_APP_PORT: "8001"
+    volumes:
+      - type: bind
+        source: ${BGE_M3_HOST_PATH:-./models/bge-m3}
+        target: /app/models/bge-m3
+        read_only: true
+      - type: bind
+        source: ${BGE_RERANKER_HOST_PATH:-./models/bge-reranker-v2-m3}
+        target: /app/models/bge-reranker-v2-m3
+        read_only: true
+      - knowledge-data:/rewater-agent-data-base
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  research-api:
+    build:
+      context: ./services/research-service
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment: *research-environment
+    volumes:
+      - research-reports:/app/reports
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  research-worker:
+    build:
+      context: ./services/research-service
+    restart: unless-stopped
+    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO"]
+    environment: *research-environment
+    volumes:
+      - research-reports:/app/reports
+    depends_on:
+      knowledge-query:
+        condition: service_healthy
+
+volumes:
+  knowledge-data:
+  research-reports:

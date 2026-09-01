@@ -45,10 +45,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     deepseek_api_base: OptionalUrl = None
     deepseek_api_key: str | None = None
-    enable_ragflow: bool = False
-    ragflow_base_url: OptionalUrl = None
-    ragflow_api_key: str | None = None
-    ragflow_default_dataset_ids: str | None = None
+    enable_knowledge_service: bool = False
+    knowledge_service_base_url: OptionalUrl = None
+    knowledge_service_top_k: int = Field(default=6, ge=1, le=6)
     tavily_api_key: str | None = None
 
     object_storage_endpoint: str | None = None

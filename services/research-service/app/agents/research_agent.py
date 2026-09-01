@@ -22,7 +22,7 @@ from app.schemas import (
     ResearchSynthesis,
 )
 from app.tools.external_search import external_search
-from app.tools.ragflow_search import ragflow_search
+from app.tools.knowledge_base_search import knowledge_base_search
 from app.tools.report_writer import write_html_report
 from app.tools.research_workspace import save_research_section
 from app.tools.web_reader import read_web_page
@@ -732,13 +732,13 @@ def _build_search_subagent(model_name: str) -> dict[str, Any]:
     阅读相关工具，不直接生成最终报告。
     """
     settings: Settings = get_settings()
-    if settings.enable_ragflow:
-        tools = [external_search, read_web_page, ragflow_search]
+    if settings.enable_knowledge_service:
+        tools = [external_search, read_web_page, knowledge_base_search]
     else:
         tools = [external_search, read_web_page]
     return {
         "name": "search-agent",
-        "description": "负责公开互联网检索、网页读取、RAGFlow 内部知识库检索和证据整理。",
+        "description": "负责公开互联网检索、网页读取、内部知识库检索和证据整理。",
         "system_prompt": _load_prompt(SEARCH_AGENT_PROMPT_PATH),
         "tools": tools,
         "model": model_name,

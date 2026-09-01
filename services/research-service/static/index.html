@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI 研究报告工作台</title>
+<title>再生水研究报告工作台</title>
 <style>
   :root {
     --primary: #176b5b;
@@ -140,7 +140,7 @@
 
 <header>
   <span class="brand-mark" aria-hidden="true"></span>
-  <span class="logo">AI 研究报告工作台</span>
+  <span class="logo">再生水研究报告工作台</span>
   <span class="version">v0.1</span>
   <div class="header-actions">
     <button class="btn btn-secondary btn-sm" id="btnLatestReport" type="button">
@@ -167,7 +167,7 @@
     <form id="createForm">
       <div class="form-group">
         <label>研究主题 *</label>
-        <input type="text" id="topic" placeholder="例如：量子计算在金融风险建模中的应用" maxlength="200" required>
+        <input type="text" id="topic" placeholder="例如：城市再生水用于工业循环冷却的应用与风险管控" maxlength="200" required>
       </div>
       <div class="form-group">
         <label>研究目标 *</label>
@@ -175,7 +175,7 @@
       </div>
       <div class="form-group">
         <label>目标读者 *</label>
-        <input type="text" id="targetAudience" placeholder="例如：金融科技从业者、学术研究者" maxlength="100" required>
+        <input type="text" id="targetAudience" placeholder="例如：水务管理人员、再生水运营单位、科研人员" maxlength="100" required>
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -266,7 +266,8 @@
       </div>
       <div class="report-actions">
         <span class="report-source-count" id="reportSourceCount"></span>
-        <button class="btn btn-secondary btn-sm" id="btnPrintReport" type="button">打印</button>
+        <button class="btn btn-secondary btn-sm" id="btnDownloadReport" type="button">下载 HTML</button>
+        <button class="btn btn-secondary btn-sm" id="btnPrintReport" type="button">打印 / PDF</button>
       </div>
     </div>
     <iframe
@@ -304,7 +305,7 @@ function resolveApiBase() {
   }
 
   if (window.location.protocol === 'file:') {
-    return 'http://127.0.0.1:8000';
+    return 'http://127.0.0.1:8010';
   }
 
   return window.location.origin;
@@ -323,6 +324,7 @@ const state = {
   outline: null,
   report: null,
   reportUrl: null,
+  preparedReportHtml: null,
   polling: null,      // interval id
 };
 
@@ -649,6 +651,7 @@ function showReport(data) {
   $('reportSourceCount').textContent = sourceCount ? `${sourceCount} 个参考来源` : '暂无参考来源';
   const reportHtml = data.html || '<!doctype html><html lang="zh-CN"><body><p>报告内容为空</p></body></html>';
   const preparedHtml = prepareReportHtml(reportHtml);
+  state.preparedReportHtml = preparedHtml;
   if (state.reportUrl) URL.revokeObjectURL(state.reportUrl);
   state.reportUrl = URL.createObjectURL(new Blob([preparedHtml], { type: 'text/html' }));
   $('reportContent').src = state.reportUrl;
@@ -754,9 +757,84 @@ function bindReportAnchorNavigation() {
 
 $('reportContent').addEventListener('load', bindReportAnchorNavigation);
 
-$('btnPrintReport').addEventListener('click', function() {
-  const reportWindow = $('reportContent').contentWindow;
-  if (reportWindow) reportWindow.print();
+function buildReportFilename(extension) {
+  const title = state.report && state.report.title ? state.report.title : '研究报告';
+  const safeTitle = title
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 100) || '研究报告';
+  const version = Number.isInteger(state.report && state.report.version)
+    ? `-v${state.report.version}`
+    : '';
+  return `${safeTitle}${version}.${extension}`;
+}
+
+$('btnDownloadReport').addEventListener('click', function() {
+  if (!state.preparedReportHtml) {
+    alert('报告内容尚未加载完成，请稍后重试。');
+    return;
+  }
+
+  const downloadUrl = URL.createObjectURL(new Blob(
+    [state.preparedReportHtml],
+    { type: 'text/html;charset=utf-8' },
+  ));
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.download = buildReportFilename('html');
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+});
+
+async function waitForPrintAssets(reportWindow) {
+  const reportDocument = reportWindow.document;
+  if (reportDocument.readyState !== 'complete') {
+    await new Promise(resolve => reportWindow.addEventListener('load', resolve, { once: true }));
+  }
+
+  const imageTasks = Array.from(reportDocument.images).map(image => {
+    if (image.complete) return Promise.resolve();
+    return new Promise(resolve => {
+      image.addEventListener('load', resolve, { once: true });
+      image.addEventListener('error', resolve, { once: true });
+    });
+  });
+  const fontTask = reportDocument.fonts && reportDocument.fonts.ready
+    ? reportDocument.fonts.ready.catch(() => undefined)
+    : Promise.resolve();
+  const assetsTask = Promise.all([fontTask, ...imageTasks]);
+  const timeoutTask = new Promise(resolve => window.setTimeout(resolve, 5000));
+  await Promise.race([assetsTask, timeoutTask]);
+}
+
+$('btnPrintReport').addEventListener('click', async function() {
+  if (!state.preparedReportHtml) {
+    alert('报告内容尚未加载完成，请稍后重试。');
+    return;
+  }
+
+  const reportWindow = window.open('', '_blank');
+  if (!reportWindow) {
+    alert('浏览器阻止了打印窗口，请允许本站打开弹窗后重试。');
+    return;
+  }
+
+  try {
+    reportWindow.opener = null;
+    reportWindow.document.open();
+    reportWindow.document.write(state.preparedReportHtml);
+    reportWindow.document.close();
+    await waitForPrintAssets(reportWindow);
+    reportWindow.focus();
+    reportWindow.addEventListener('afterprint', () => reportWindow.close(), { once: true });
+    reportWindow.print();
+  } catch (error) {
+    if (!reportWindow.closed) reportWindow.close();
+    alert('打开打印页面失败，请重试。');
+    debug('打印报告失败', { message: error && error.message ? error.message : String(error) });
+  }
 });
 
 // ============================================================

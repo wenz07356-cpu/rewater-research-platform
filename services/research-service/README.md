@@ -81,7 +81,7 @@ ENABLE_RAGFLOW=false
 启动 FastAPI：
 
 ```bash
-.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8010
 ```
 
 启动 Celery worker：
@@ -93,14 +93,14 @@ ENABLE_RAGFLOW=false
 访问地址：
 
 ```text
-http://127.0.0.1:8000
-http://127.0.0.1:8000/api/v1/docs
+http://127.0.0.1:8010
+http://127.0.0.1:8010/api/v1/docs
 ```
 
 健康检查：
 
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8010/health
 ```
 
 ## 5. 验证

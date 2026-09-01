@@ -7,5 +7,6 @@ data/
 reports/
 备课/
 archive/
-text/
+text/*
+!text/research_888.md
 .venv

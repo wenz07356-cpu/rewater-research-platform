@@ -38,6 +38,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 logs/
+app/rag_eval/ragas/runs/
 
 /doc/
 
@@ -170,6 +171,7 @@ cython_debug/
 
 # IDE
 .idea/
+.idea.backup/
 *.iml
 
 # Python
